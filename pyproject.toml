@@ -1,0 +1,39 @@
+[project]
+name = "bhovix-core"
+version = "0.0.0"
+description = "Shared building blocks for Bhovix Lab's AI builds"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "LicenseRef-Proprietary"
+license-files = ["LICENSE"]
+authors = [{ name = "Bhovix Lab" }]
+# PyPI refuses any upload carrying this classifier.
+classifiers = ["Private :: Do Not Upload"]
+# The core carries no vendor SDK by default; each backend is an optional extra added when a build needs it.
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest==9.1.1", "ruff==0.17.1"]
+# Free scanners that keep working when the repository turns private.
+scan = ["pip-audit==2.10.1", "bandit==1.9.4", "zizmor==1.31.1"]
+
+[build-system]
+requires = ["uv_build>=0.12,<0.14"]
+build-backend = "uv_build"
+
+[tool.uv]
+# Release cooldown comes from Dependabot (7 days); pins are exact so the lock only changes through its PRs.
+default-groups = ["dev"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests", "demos"]
+
+[tool.ruff.lint]
+extend-select = ["B", "DTZ", "I", "S", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

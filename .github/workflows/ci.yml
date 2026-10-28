@@ -1,0 +1,98 @@
+name: CI
+
+# Required checks for main: "check" and "security". Every tool here is free and keeps working when the repository
+# turns private, so making it private later changes nothing in this file.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    # A draft pull request runs no CI; it runs when marked ready for review and on every push after that.
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
+  # Weekly, so pip-audit and the scanners see newly published problems in code nothing changed.
+  schedule:
+    - cron: "23 3 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GITLEAKS_VERSION: "8.30.1"
+  GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+  # Trivy's GitHub Actions were compromised in March 2026, so the release binary is used, checksum-verified.
+  TRIVY_VERSION: "0.76.0"
+  TRIVY_SHA256: "e24b1c51293c1b15e4ba8d45bbc7891ba053f90278ec2698f3562c993e145fe7"
+
+jobs:
+  check:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        with:
+          version: "0.13.6"
+          checksum: "f29c3e94ffabd7e6f3ba521dba169a9b7ec12100bf3257087f0f24f6123f3645"
+          python-version: "3.13"
+          activate-environment: true
+          cache-suffix: "ci-check"
+      - name: Install (locked)
+        run: uv sync --locked
+      - name: Lint
+        run: ruff check src tests demos
+      - name: Format
+        run: ruff format --check src tests demos
+      - name: Tests
+        run: pytest -q
+
+  security:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0  # gitleaks scans the whole history
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        with:
+          version: "0.13.6"
+          checksum: "f29c3e94ffabd7e6f3ba521dba169a9b7ec12100bf3257087f0f24f6123f3645"
+          python-version: "3.13"
+          activate-environment: true
+          cache-suffix: "ci-security"
+      - name: Install the scanners (locked)
+        run: uv sync --locked --only-group scan
+      - name: Dependencies with known vulnerabilities (every locked package, hashes required)
+        run: |
+          uv export --locked --all-extras --all-groups --no-emit-project --format requirements-txt -o "$RUNNER_TEMP/locked.txt"
+          pip-audit -r "$RUNNER_TEMP/locked.txt" --require-hashes --disable-pip
+      - name: Python security lint
+        run: bandit -q -r src demos -ll
+      # Semgrep runs in its own isolated environment (pinned version): its own old dependencies would otherwise fail
+      # the vulnerability audit of this project's lock, and they never ship with the core.
+      - name: Static analysis (Semgrep community rules)
+        run: uvx --exclude-newer 2026-10-21T00:00:00Z --from "semgrep==1.181.0" semgrep scan --config p/python --config p/secrets --metrics=off --error --quiet src tests demos
+      - name: Workflow audit
+        run: zizmor --offline --format plain .github
+      - name: Secrets in the whole history (gitleaks, checksum-verified binary)
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/gitleaks.tgz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" git --redact --no-banner --exit-code 1 .
+      - name: Vulnerabilities, misconfigurations and secrets in the files (Trivy, checksum-verified binary)
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/trivy.tgz" \
+            "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          echo "${TRIVY_SHA256}  $RUNNER_TEMP/trivy.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/trivy.tgz" -C "$RUNNER_TEMP" trivy
+          "$RUNNER_TEMP/trivy" fs --skip-dirs .venv --scanners vuln,misconfig,secret --severity HIGH,CRITICAL --exit-code 1 --no-progress .
