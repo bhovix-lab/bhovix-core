@@ -6,7 +6,7 @@ input_schema:
   required: [id]
   additionalProperties: false
   properties:
-    id: {type: string, minLength: 1, maxLength: 64}
+    id: {type: string, minLength: 1, maxLength: 64, pattern: 'rec-[0-9]{3,10}'}
 risk_class: sign_off
 targets_production: false
 changes_spend: false

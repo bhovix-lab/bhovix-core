@@ -1,9 +1,19 @@
-"""Local-folder audit sink. Objects are opened with mode "x", so a retry never makes a second object."""
+"""Local-folder audit sink for slice 1 (laptop, fakes).
+
+Each object is written to a temp file, fsynced, then hard-linked into place: the link fails if the object exists,
+so a retry never makes a second object and a crash never leaves a half-written one.
+
+Limitation (stated, not hidden): ``verify_object`` compares against ``index.jsonl`` in the same folder, so someone
+who can write the folder can rewrite both. There is no hash chain or signature here; tamper evidence comes with
+the S3 Object Lock sink and the signed daily checkpoint (owner decision OD-4, before the first deployment).
+"""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 import threading
 from pathlib import Path
 
@@ -32,15 +42,24 @@ class LocalDirSink:
         entry = {"key": key, "run_id": event.run_id, "sha256": hashlib.sha256(body).hexdigest()}
         with self._lock:
             self.objects.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=self.objects, prefix=".tmp-")
             try:
-                with open(self.objects / key, "xb") as f:
+                with os.fdopen(fd, "wb") as f:
                     f.write(body)
-            except FileExistsError:
-                # A same-bytes object with no index line is a half-finished earlier write: finish it.
-                if self._indexed(key) or (self.objects / key).read_bytes() != body:
-                    raise DuplicateEvent(event.event_id) from None
+                    f.flush()
+                    os.fsync(f.fileno())
+                try:
+                    os.link(tmp, self.objects / key)  # atomic, and fails if the object exists
+                except FileExistsError:
+                    # Same bytes and no index line = a half-finished earlier write: finish it.
+                    if self._indexed(key) or (self.objects / key).read_bytes() != body:
+                        raise DuplicateEvent(event.event_id) from None
+            finally:
+                Path(tmp).unlink(missing_ok=True)
             with open(self.index, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, sort_keys=True) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
         return key
 
     def write_intent(self, event: AuditEvent) -> str:

@@ -13,6 +13,7 @@ from typing import Any
 from bhovix_core.actions.authorizer import authorize
 from bhovix_core.audit.protocol import AuditSink, AuditUnavailable
 from bhovix_core.guard.injection import Detector, injection_check
+from bhovix_core.identity import Principal
 from bhovix_core.limits import Limits
 from bhovix_core.llm.protocol import LLM
 from bhovix_core.models import (
@@ -53,13 +54,11 @@ def assert_qualified(registry: Registry, agent_id: str) -> None:
         registry.config.routes[agent.model_route].model_id,
         registry.prompt_sha256(agent_id),
         registry.config_hash(agent_id),
+        registry.golden_sha256(agent_id),  # a weakened golden set also invalidates the run
     )
     for g in qualified_runs(registry):
-        if (
-            g.agent_id == agent_id
-            and g.green
-            and (g.model_id, g.prompt_sha256, g.config_hash) == want
-        ):
+        got = (g.model_id, g.prompt_sha256, g.config_hash, g.golden_sha256)
+        if g.agent_id == agent_id and g.green and got == want:
             return
     raise Unqualified(agent_id)
 
@@ -170,7 +169,13 @@ class Runtime:
             if call.name in self.registry.contracts:
                 return self._submit(run, call)
             if call.name in self.hooks.tools and call.name in agent.tools_allowed:
-                result = self.hooks.tools[call.name](call.input)
+                result = str(self.hooks.tools[call.name](call.input))
+                verdict = injection_check(self.detector, result, f"tool:{call.name}")
+                if verdict.flagged:  # tool output is untrusted text too
+                    self._note(
+                        run, "guard", "injection", result="flagged", error_code=verdict.reason_code
+                    )
+                    return self._to(run, S.NEEDS_PERSON, verdict.reason_code)
                 messages += [
                     {"role": "assistant", "content": f"tool {call.name}"},
                     {"role": "user", "content": f"tool result: {result}"},
@@ -190,8 +195,9 @@ class Runtime:
             return self._to(run, S.NEEDS_PERSON, "invalid_proposal")
         self.store.save_plan(plan)
         run = self._to(run, S.PLAN_READY)
-        principal = self.registry.principals[run.principal_id]
-        decision = authorize(principal, agent, contract, plan, self.limits.blocked(agent.id))
+        decision = authorize(
+            self._principal(run), agent, contract, plan, self.limits.blocked(agent.id)
+        )
         try:
             self.audit.write_intent(
                 self._event(
@@ -217,6 +223,30 @@ class Runtime:
             return run
         return self.execute(run.run_id)
 
+    def _principal(self, run: Run) -> Principal:
+        """An unknown principal gets no rights, so the gate denies it (scope.principal) and audits it."""
+        return self.registry.principals.get(run.principal_id) or Principal(
+            id=run.principal_id, kind="service", rights=[]
+        )
+
+    def _recheck(self, run: Run, plan: Plan, decision: GateDecision) -> str | None:
+        """Re-run the gate at execution time: an approval can wait hours while limits, the kill switch,
+        the agent's status or the principal's rights change. Returns a reason to stop, or None."""
+        agent = self.registry.agents.get(run.agent_id)
+        contract = self.registry.contracts.get(plan.action_id)
+        if agent is None or contract is None:
+            return "recheck.unknown_agent_or_action"
+        if plan.hash() != decision.plan_hash:
+            return "plan_changed"
+        now_d = authorize(
+            self._principal(run), agent, contract, plan, self.limits.blocked(agent.id)
+        )
+        if now_d.outcome == "deny":
+            return f"recheck.{now_d.rule_id}"
+        if now_d.outcome != decision.outcome:
+            return "recheck.class_changed"
+        return None
+
     def on_decided(self, run_id: str, status: str, approval: Any = None) -> Run:
         """Called by approvals when a request ends: APPROVED runs the plan; anything else is final."""
         run = self.store.get_run(run_id)
@@ -230,6 +260,14 @@ class Runtime:
         decision = self.store.get_gate_decision(run_id)
         if self.hooks.execute is None:
             return self._to(run, S.NEEDS_PERSON, "executor_not_configured")
+        if self.hooks.verify is None:  # an unverified action is never reported as done
+            return self._to(run, S.NEEDS_PERSON, "verify_not_configured")
+        stop = self._recheck(run, plan, decision)
+        if stop is not None:
+            self._note(run, "gate", "recheck", object_ref=plan.plan_id, rule_id=stop, result="stop")
+            if stop == "recheck.limits.kill_switch":
+                return self._to(run, S.STOPPED, "kill_switch")
+            return self._to(run, S.NEEDS_PERSON, stop)
         try:
             self.audit.write_intent(
                 self._event(
@@ -255,7 +293,7 @@ class Runtime:
             return self._to(run, S.NEEDS_PERSON, result.error_code or f"outcome_{result.outcome}")
         run = self._to(run, S.VERIFYING)
         try:
-            verified = self.hooks.verify is not None and self.hooks.verify(plan, result)
+            verified = bool(self.hooks.verify(plan, result))
         except Exception:  # noqa: BLE001 - an error is "not verified"
             verified = False
             self._note(run, "action", "verify", result="error", error_code="verify_error")

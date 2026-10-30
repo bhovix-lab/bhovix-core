@@ -1,7 +1,7 @@
 """bhovix-core CLI.
 
   bhovix-core gate <agent> [--config DIR]              exit 0 when green, 1 when below the threshold
-  bhovix-core limits stop|reset --by WHO [--config DIR]  audited
+  bhovix-core limits stop|reset --by WHO [--config DIR]  refused until a shared store exists (exit 2)
 
 ``--config`` overrides ``BHOVIX_CONFIG_DIR``. From a source checkout use ``uv run python -m bhovix_core.cli`` so
 the current folder (and its check modules) is importable.
@@ -15,11 +15,8 @@ import sys
 
 from bhovix_core import evals
 from bhovix_core.app import make_llm
-from bhovix_core.audit import LocalDirSink
 from bhovix_core.config import load_config
-from bhovix_core.limits import Limits
 from bhovix_core.registry import load_registry
-from bhovix_core.store import MemoryStore
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -45,12 +42,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0 if run.green else 1
 
-    # ponytail: the memory store lives in one process, so stop/reset here only audits and sets this
-    # process's switch; it becomes a shared switch when the Postgres store arrives.
-    limits = Limits(MemoryStore(), LocalDirSink(cfg.audit_dir), reg)
-    (limits.stop if args.action == "stop" else limits.reset)(args.by)
-    print(f"kill switch {args.action} by {args.by} (audited)")
-    return 0
+    if cfg.backends.store == "memory":
+        # The memory store lives inside one running process; a separate CLI process cannot reach it, so
+        # claiming "stopped" here would be a lie. Use App.limits.stop() in-process until Postgres arrives.
+        print(
+            "refused: the kill switch needs a shared store (Postgres). With the memory store, "
+            "call app.limits.stop(by=...) inside the running process.",
+            file=sys.stderr,
+        )
+        return 2
+    raise NotImplementedError("shared-store kill switch arrives with store.postgres")
 
 
 if __name__ == "__main__":

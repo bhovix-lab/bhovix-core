@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Protocol
 
 from bhovix_core.guard.redact import redact
-from bhovix_core.models import ApprovalRequest
+from bhovix_core.models import ApprovalDecision, ApprovalRequest
 
 # Copied then edited from WARDEN gate.py: no clickable links or images in text people act on.
 _LINK = re.compile(r"(?i)\b(?:https?|ftp)://\S+|\bwww\.\S+|!\[[^\]]*\]\([^)]*\)|<[^>|]+\|[^>]*>")
@@ -24,11 +25,21 @@ class Channel(Protocol):
     def update(self, req: ApprovalRequest) -> None: ...
     def notify(self, principal_id: str, text: str) -> None: ...
 
+    def parse_decision(
+        self, headers: Mapping[str, str], body: bytes, now_ts: float
+    ) -> ApprovalDecision | None:
+        """Verify the callback and return the decision with the approver taken from the verified request."""
+        ...
+
 
 class FakeChannel:
+    """Records what would be sent. Callbacks are verified exactly like Slack's (v0 HMAC) with a test secret;
+    with no secret every callback is refused."""
+
     name = "fake"
 
-    def __init__(self) -> None:
+    def __init__(self, signing_secret: str = "") -> None:
+        self._secret = signing_secret
         self.sent: list[tuple[str, str, list[str]]] = []
         self.updates: list[tuple[str, str]] = []
         self.notices: list[tuple[str, str]] = []
@@ -42,3 +53,11 @@ class FakeChannel:
 
     def notify(self, principal_id: str, text: str) -> None:
         self.notices.append((principal_id, clean(text)))
+
+    def parse_decision(
+        self, headers: Mapping[str, str], body: bytes, now_ts: float
+    ) -> ApprovalDecision | None:
+        from bhovix_core.approvals.slack import parse_decision
+
+        d = parse_decision(headers, body, now_ts, self._secret)
+        return None if d is None else d.model_copy(update={"channel": self.name})

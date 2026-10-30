@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
 
 from bhovix_core.approvals.channel import Channel, clean
 from bhovix_core.audit.protocol import AuditSink
+from bhovix_core.guard.injection import Detector, injection_check
 from bhovix_core.models import (
     ApprovalDecision,
     ApprovalRequest,
@@ -22,16 +23,25 @@ from bhovix_core.store.protocol import StaleState, Store
 OnDecided = Callable[[str, str, ApprovalDecision | None], object]
 
 
-def summary(plan: Plan) -> str:
-    """Template-built, never by the model; inputs redacted."""
+WARNING = "WARNING: the inputs read like instructions to an AI. Check them before approving. "
+
+
+def summary(plan: Plan, detector: Detector | None = None) -> str:
+    """Template-built, never by the model; inputs redacted and link-free. Inputs that read like instructions
+    (the model copied them from a document) get a warning so a person does not approve them on autopilot."""
+    inputs = canonical_json(plan.inputs)
+    flagged = detector is not None and injection_check(detector, inputs, "approval_summary").flagged
     return clean(
-        f"{plan.agent_id} asks to run {plan.action_id} v{plan.action_version} "
-        f"({plan.risk_class}) on {plan.target.system}. Inputs: {canonical_json(plan.inputs)}. "
+        f"{WARNING if flagged else ''}{plan.agent_id} asks to run {plan.action_id} "
+        f"v{plan.action_version} ({plan.risk_class}) on {plan.target.system}. Inputs: {inputs}. "
         f"Expected: {plan.expected_outcome}. Plan {plan.hash()[:12]}."
     )
 
 
 class Approvals:
+    """Decisions must come from a channel's verified parse (``receive``), never from caller-supplied fields:
+    ``decide`` is the internal step after verification and the one tests drive with a trusted fake."""
+
     def __init__(
         self,
         store: Store,
@@ -40,9 +50,17 @@ class Approvals:
         channel: Channel,
         on_decided: OnDecided,
         clock: Callable[[], datetime] = now,
+        detector: Detector | None = None,
     ) -> None:
         self.store, self.audit, self.registry, self.channel = store, audit, registry, channel
-        self.on_decided, self.clock = on_decided, clock
+        self.on_decided, self.clock, self.detector = on_decided, clock, detector
+
+    def receive(self, headers: Mapping[str, str], body: bytes) -> tuple[bool, str]:
+        """Entry point for a channel callback: the channel verifies the request and names the approver."""
+        d = self.channel.parse_decision(headers, body, self.clock().timestamp())
+        if d is None:
+            return False, "bad_signature"
+        return self.decide(d)
 
     def _audit(self, req: ApprovalRequest, operation: str, principal: str, **kw) -> None:
         self.audit.write_outcome(
@@ -68,7 +86,7 @@ class Approvals:
             steps=chain.steps,
             step_expires_at=self.clock() + timedelta(seconds=chain.steps[0].timeout_s),
             requested_by=requested_by,
-            summary=summary(plan),
+            summary=summary(plan, self.detector),
         )
         self.store.save_approval_request(req)
         self.channel.send(req, chain.steps[0].approver_ids)

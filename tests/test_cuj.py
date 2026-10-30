@@ -232,10 +232,19 @@ def test_sign_off_denied_and_read_only_runs_without_approval(app, fake_system):
     assert not [r for r in app.store._approvals.values() if r.run_id == look.run_id]
 
 
-def test_cli_limits_reset_is_audited(cfg_dir, capsys):
-    assert cli.main(["--config", str(cfg_dir), "limits", "reset", "--by", "user:a"]) == 0
-    events = (cfg_dir / "audit" / "index.jsonl").read_text(encoding="utf-8")
-    assert '"run_id": "-"' in events
+@pytest.mark.parametrize("action", ["stop", "reset"])
+def test_cli_kill_switch_refused_without_shared_store(cfg_dir, capsys, action):
+    """A separate CLI process cannot reach the memory store: it must refuse, not claim success."""
+    assert cli.main(["--config", str(cfg_dir), "limits", action, "--by", "user:a"]) == 2
+    assert "refused" in capsys.readouterr().err
+    assert not (cfg_dir / "audit" / "index.jsonl").exists()
+
+
+def test_in_process_reset_is_audited(app):
+    app.limits.stop(by="user:a")
+    app.limits.reset(by="user:a")
+    ops = [(e.operation, e.principal) for e in app.audit.events("-")]
+    assert ops == [("stop", "user:a"), ("reset", "user:a")]
 
 
 def test_golden_input_ref_cannot_escape_inputs_dir(cfg_dir):

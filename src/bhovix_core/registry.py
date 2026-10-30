@@ -6,6 +6,7 @@ Every cross-file problem fails at start-up with ``ConfigError``.
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -59,6 +60,13 @@ class Registry:
 
     def prompt_sha256(self, agent_id: str) -> str:
         return hashlib.sha256(self._prompt_path(agent_id).read_bytes()).hexdigest()
+
+    def golden_path(self, agent_id: str):
+        return confined(self.config.golden_dir, f"{agent_id}.jsonl")
+
+    def golden_sha256(self, agent_id: str) -> str:
+        path = self.golden_path(agent_id)
+        return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else ""
 
     def config_hash(self, agent_id: str) -> str:
         agent = self.agents[agent_id]
@@ -132,6 +140,13 @@ def _cross_check(config, agents, chains, contracts) -> list[str]:
                 out.append(f"chain {c.id} step {i}: needs approvers and timeout_s > 0")
     for c in contracts.values():
         out += [f"action {c.id}: {p}" for p in schema_problems(c.input_schema)]
+        props = (c.input_schema or {}).get("properties") or {}
+        if "key" in props:
+            out.append(f"action {c.id}: input 'key' is reserved for the idempotency key")
+        for op in filter(None, [c.executor.operation, c.executor.lookup_operation]):
+            for field in re.findall(r"{(\w+)}", op):
+                if field != "key" and "pattern" not in props.get(field, {}):
+                    out.append(f"action {c.id}: path field {field} needs a pattern in input_schema")
         if c.chain_id not in chains:
             out.append(f"action {c.id}: unknown chain {c.chain_id}")
         for ref in filter(None, [c.verify_check, c.rollback]):

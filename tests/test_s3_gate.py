@@ -133,7 +133,7 @@ def test_row5_blocked_by_limits(cfg_dir):
 
 
 def test_row6_sign_off_denied_until_stepup(cfg_dir):
-    d = _gate(_reg(cfg_dir), _plan("delete_record", {"id": "rec-1"}))
+    d = _gate(_reg(cfg_dir), _plan("delete_record", {"id": "rec-001"}))
     assert (d.outcome, d.rule_id) == ("deny", "class.sign_off.no_stepup")
 
 
@@ -145,7 +145,7 @@ def test_row7_reversible_needs_approval(cfg_dir):
 
 
 def test_row8_read_only_allowed(cfg_dir):
-    d = _gate(_reg(cfg_dir), _plan("lookup_record", {"id": "rec-1"}))
+    d = _gate(_reg(cfg_dir), _plan("lookup_record", {"id": "rec-001"}))
     assert (d.outcome, d.rule_id) == ("allow", "class.read_only")
 
 
@@ -170,7 +170,7 @@ def test_raise_read_only_to_reversible(cfg_dir):
         cfg_dir / "actions" / "lookup_record.yaml",
         lambda d: d.update(targets_production=True, rollback="tests.fixtures.checks:noop"),
     )
-    d = _gate(_reg(cfg_dir), _plan("lookup_record", {"id": "rec-1"}))
+    d = _gate(_reg(cfg_dir), _plan("lookup_record", {"id": "rec-001"}))
     assert (d.outcome, d.rule_id) == ("needs_approval", "class.reversible")
 
 

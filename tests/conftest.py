@@ -27,7 +27,7 @@ def qualify(registry, agent_id: str = "test-agent", green: bool = True) -> None:
         model_id=registry.config.routes[agent.model_route].model_id,
         prompt_sha256=registry.prompt_sha256(agent_id),
         config_hash=registry.config_hash(agent_id),
-        golden_sha256="0" * 64,
+        golden_sha256=registry.golden_sha256(agent_id),
         n=1,
         passed=1 if green else 0,
         pass_rate=1.0 if green else 0.0,

@@ -19,6 +19,7 @@ class FakeSystem:
         self.redirect_create = False  # answer create with a 302 to /stolen
         self.drop_after_create = False  # create, then close the connection with no reply (once)
         self.garbage_after_create = False  # create, then reply 200 with a non-JSON body (once)
+        self.error_after_create = 0  # create, then reply with this status, e.g. 500 (once)
         self.stolen_auth: list[str] = []
         self.delay_s = 1.5
         self._lock = threading.Lock()
@@ -60,13 +61,13 @@ class FakeSystem:
                     return
                 if urlsplit(self.path).path != "/records":
                     return self._send(404)
-                if system.redirect_create:
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if system.redirect_create:  # body read first, so the client sees the 302, not a reset
                     self.send_response(302)
                     self.send_header("Location", f"http://127.0.0.1:{system.port}/stolen")
                     self.send_header("Content-Length", "0")
                     self.end_headers()
                     return None
-                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 key = self.headers.get("Idempotency-Key", "")
                 with system._lock:
                     rec_id = system.by_key.get(key)
@@ -79,11 +80,14 @@ class FakeSystem:
                     system.timeout_once_on_create = False
                     drop, system.drop_after_create = system.drop_after_create, False
                     garbage, system.garbage_after_create = system.garbage_after_create, False
+                    err, system.error_after_create = system.error_after_create, 0
                 if slow:
                     time.sleep(system.delay_s)
                 if drop:
                     self.close_connection = True
                     return None
+                if err:
+                    return self._send(err)
                 if garbage:
                     self.send_response(200)
                     self.send_header("Content-Length", "2")

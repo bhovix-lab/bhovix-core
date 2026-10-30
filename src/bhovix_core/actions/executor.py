@@ -90,6 +90,8 @@ class Executor:
         self, plan: Plan, decision: GateDecision, approval: ApprovalDecision | None = None
     ) -> RunResult:
         h = plan.hash()
+        if decision.run_id != plan.run_id:
+            return RunResult(outcome="failed", error_code="run_mismatch")
         if h != decision.plan_hash or (approval is not None and approval.plan_hash != h):
             return RunResult(outcome="failed", error_code="plan_hash_mismatch")
         if decision.outcome == "needs_approval" and (
@@ -121,7 +123,12 @@ class Executor:
             if ref is None and contract.executor.lookup_operation:
                 return self._lookup(contract, plan, call)
             return RunResult(outcome="succeeded", external_ref=ref or plan.target.ref)
-        return RunResult(outcome="failed", error_code=f"http_{status}", retryable=status >= 500)
+        if method != "GET" and (status >= 500 or status == 408):
+            # A mutating call may have been applied before the server failed: look it up, never retry.
+            if contract.executor.lookup_operation:
+                return self._lookup(contract, plan, call)
+            return RunResult(outcome="unknown", error_code=f"http_{status}")
+        return RunResult(outcome="failed", error_code=f"http_{status}")
 
     def _lookup(self, contract: ActionContract, plan: Plan, call: Call) -> RunResult:
         """Find the result by idempotency key. Never retry blindly."""

@@ -69,6 +69,7 @@ def build(
     store, audit = MemoryStore(), LocalDirSink(cfg.audit_dir)
     limits = Limits(store, audit, reg)
     executor = Executor(reg, secrets, timeout_s=timeout_s)
+    detector = detector or make_detector(cfg)
     holder: dict[str, Runtime] = {}
     approvals = Approvals(
         store,
@@ -77,6 +78,7 @@ def build(
         channel or make_channel(cfg),
         lambda run_id, status, d: holder["rt"].on_decided(run_id, status, d),
         clock,
+        detector,
     )
     hooks = Hooks(
         request_approval=approvals.request,
@@ -89,7 +91,7 @@ def build(
         store,
         audit,
         make_llm(cfg),
-        detector or make_detector(cfg),
+        detector,
         limits,
         agents,
         hooks,
