@@ -21,6 +21,7 @@ class Deps:
     resolve: Callable[[str], str]
     routes: Mapping[str, Any] | None = None
     store: Any = None
+    signer: Any = None
     llm: Any = None
 
 

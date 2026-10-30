@@ -42,6 +42,16 @@
 - The executor calls a heartbeat before every HTTP attempt, so long retries do not look stuck.
 - `Verdict.score` is bounded to 0..1; a detector failure is logged with its cause (still fails closed).
 
+### Added (slice 2 P3, every kind `slice2-unverified` until the P9 live run)
+- `backends.audit: {kind: chain}`: WARDEN's hash-chained, append-only audit in the store's database, signed
+  checkpoints every `checkpoint_every` rows, and an optional `anchor: {kind: s3_object_lock, bucket, region}`
+  (GOVERNANCE, 1 day by default). `hadavin-sdk audit verify` exits 0 intact, 1 not intact,
+  2 refused (a memory store lives in one process), 3 unreadable.
+- `backends.signer`: `none` (default), `ed25519_local`, `aws_kms`. Start-up signs a probe message.
+- Environment table: prod refuses `ed25519_local` and a chain without an anchor that has `retention_ack: true`;
+  COMPLIANCE mode only in prod with `retention_ack`.
+- `store/migrations/0002_audit_chain.sql` (applied by `hadavin-sdk migrate` with the postgres store).
+
 ### Added (slice 2 P4, `slice2-unverified` until the P9 live run)
 - `backends.secrets: {kind: aws_secrets_manager, region, ttl_s: 300}`: values cached for `ttl_s` (0 = no
   cache), a missing secret is a `ConfigError` at the start-up probe, values are never logged.
