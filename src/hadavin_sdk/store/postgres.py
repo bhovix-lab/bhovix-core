@@ -12,6 +12,7 @@ import logging
 import os
 import tempfile
 import threading
+from collections.abc import Callable
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
@@ -98,6 +99,25 @@ def ca_file(settings, resolve) -> str | None:
     return path
 
 
+PasswordSource = Callable[[str, int, str], str]  # (host, port, user) -> a short-lived password
+
+
+def password_source(iam_auth: bool, region: str | None) -> PasswordSource | None:
+    """The sign-in helper: None (the DSN's own password), or RDS IAM from `store/auth_aws.py`, the only
+    module of the store that imports an AWS SDK (lock-in audit 2026-10-31 #5)."""
+    if not iam_auth:
+        return None
+    try:
+        from hadavin_sdk.store import auth_aws
+    except ModuleNotFoundError as exc:
+        if (exc.name or "").startswith("hadavin_sdk"):
+            raise
+        raise ConfigError(
+            "store postgres with iam_auth needs: pip install hadavin-sdk[aws]"
+        ) from exc
+    return auth_aws.rds_iam(region)
+
+
 def connect(
     dsn: str,
     *,
@@ -115,12 +135,9 @@ def connect(
         parts = conninfo_to_dict(dsn)
         # The migration role may log in with a password; the runtime never (refused in build()).
         if not parts.get("password"):
-            import boto3  # the `aws` extra; checked when the store is built
-
-            extra["password"] = boto3.client("rds", region_name=region).generate_db_auth_token(
-                DBHostname=parts["host"],
-                Port=int(parts.get("port") or 5432),
-                DBUsername=parts["user"],
+            password = password_source(True, region)
+            extra["password"] = password(
+                parts["host"], int(parts.get("port") or 5432), parts["user"]
             )
     conn = psycopg.connect(dsn, autocommit=True, connect_timeout=10, **extra)
     # Plan hashes include created_at: datetimes must come back in UTC whatever the server's TimeZone is.
@@ -130,13 +147,9 @@ def connect(
 
 def build(settings, deps) -> PostgresStore:
     """Table factory: the DSN is a platform secret named in the settings (never the executor's)."""
-    if settings.iam_auth:
-        try:
-            import boto3  # noqa: F401
-        except ImportError as exc:
-            raise ConfigError(
-                "store postgres with iam_auth needs: pip install hadavin-sdk[aws]"
-            ) from exc
+    password_source(
+        settings.iam_auth, settings.region
+    )  # a missing `aws` extra fails here, with the hint
     dsn = deps.resolve(settings.dsn_secret_name)
     if settings.iam_auth and conninfo_to_dict(dsn).get("password"):
         raise ConfigError(

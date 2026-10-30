@@ -22,6 +22,7 @@ class Deps:
     routes: Mapping[str, Any] | None = None
     store: Any = None
     signer: Any = None
+    anchor: Any = None
     llm: Any = None
 
 

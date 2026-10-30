@@ -143,15 +143,95 @@ class AwsSecretsManagerSettings(KindSettings):
     ttl_s: float = Field(default=300, ge=0)  # 0 = no cache
 
 
+class _AnchorSettings(KindSettings):
+    """Every anchor kind: COMPLIANCE only in prod with `retention_ack` (the client agreed retention in
+    writing); prod also needs the ack for GOVERNANCE (config.py, environment table)."""
+
+    mode: Literal["GOVERNANCE", "COMPLIANCE"] = "GOVERNANCE"
+    retain_days: int = Field(default=1, ge=1)
+    retention_ack: bool = False
+
+
+class S3ObjectLockSettings(_AnchorSettings):
+    """AWS S3, or any S3-compatible store with Object Lock (MinIO, Ceph RGW) through `endpoint_url`."""
+
+    kind: Literal["s3_object_lock"]
+    bucket: str
+    region: str
+    endpoint_url: str | None = None  # https; plain http only to this machine (a local MinIO)
+
+    @model_validator(mode="after")
+    def _endpoint(self) -> S3ObjectLockSettings:
+        if self.endpoint_url is not None:
+            url = urlsplit(self.endpoint_url)
+            local = url.scheme == "http" and url.hostname in _LOOPBACK
+            if url.scheme != "https" and not local:
+                raise ValueError("endpoint_url must be https (plain http only to this machine)")
+        return self
+
+
+class AzureImmutableBlobSettings(_AnchorSettings):
+    """GOVERNANCE -> an Unlocked blob immutability policy, COMPLIANCE -> Locked."""
+
+    kind: Literal["azure_immutable_blob"]
+    account_url: str = Field(pattern=r"^https://")  # e.g. https://<account>.blob.core.windows.net
+    container: str = Field(pattern=r"^[a-z0-9-]{3,63}$")
+
+
+class GcsRetentionLockSettings(_AnchorSettings):
+    """GOVERNANCE -> the bucket's retention policy, COMPLIANCE -> that policy locked."""
+
+    kind: Literal["gcs_retention_lock"]
+    bucket: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]$")
+
+
+class ChainSettings(KindSettings):
+    checkpoint_every: int = Field(default=100, ge=1)
+
+
+class Ed25519LocalSettings(KindSettings):
+    """The PEM key from a file (dev, pilot) or from the secrets kind (`private_key_secret_name`; prod allows
+    only this, and only with a WORM anchor: config.py, environment table)."""
+
+    private_key_path: Path | None = None
+    private_key_secret_name: str | None = None
+    passphrase_secret_name: str | None = None
+
+    @model_validator(mode="after")
+    def _one_source(self) -> Ed25519LocalSettings:
+        if (self.private_key_path is None) == (self.private_key_secret_name is None):
+            raise ValueError("set exactly one of private_key_path and private_key_secret_name")
+        return self
+
+
+class AwsKmsSettings(KindSettings):
+    key_id: str
+    region: str
+
+
+class AzureKeyVaultKeySettings(KindSettings):
+    # One key version: https://<vault>.vault.azure.net/keys/<name>/<version> (or a managedhsm.azure.net URL).
+    key_id: str = Field(pattern=r"^https://[^/]+/keys/[A-Za-z0-9-]+/[A-Za-z0-9]+$")
+
+
+class GcpKmsSettings(KindSettings):
+    key_version: str = Field(
+        pattern=r"^projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+/cryptoKeyVersions/[0-9]+$"
+    )
+
+
 _TTL = Field(default=300, ge=0)  # seconds a secret value is cached; 0 = no cache
 
 
-class VaultSettings(KindSettings):
+_PATH = r"^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$"
+
+
+class _VaultConnection(KindSettings):
+    """How to reach and sign in to Vault or OpenBao (the `vault` secrets kind and the `vault_transit`
+    signer)."""
+
     address: str  # https; plain http only to this machine (a dev server)
     auth: Literal["token", "approle", "kubernetes"] = "token"
-    mount: str = Field(default="secret", pattern=r"^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$")
-    path_prefix: str = Field(default="", pattern=r"^([A-Za-z0-9_.-]+/)*$")  # e.g. "hadavin/acme/"
-    field: str = "value"
     namespace: str | None = None
     token_env: str = "VAULT_TOKEN"  # noqa: S105 - auth token: the variable name
     role_id: str | None = None  # auth: approle (an identifier, not a secret)
@@ -159,24 +239,46 @@ class VaultSettings(KindSettings):
     role: str | None = None  # auth: kubernetes
     jwt_path: Path = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")  # auth: kubernetes
     # Default: the auth name. Nested mounts (e.g. team-a/kubernetes) are allowed.
-    auth_mount: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$")
+    auth_mount: str | None = Field(default=None, pattern=_PATH)
     ca_cert: Path | None = None
     timeout_s: float = Field(default=10.0, gt=0)
-    ttl_s: float = _TTL
+
+    def _paths(self) -> list[str]:
+        return [self.auth_mount or ""]
 
     @model_validator(mode="after")
-    def _checks(self) -> VaultSettings:
+    def _checks(self) -> _VaultConnection:
         url = urlsplit(self.address)
         if url.scheme != "https" and not (url.scheme == "http" and url.hostname in _LOOPBACK):
             raise ValueError("address must be https (plain http only to this machine)")
-        segments = {*self.mount.split("/"), *self.path_prefix.split("/")}
-        segments |= set((self.auth_mount or "").split("/"))
-        if {".", ".."} & segments:
+        if {".", ".."} & {seg for p in self._paths() for seg in p.split("/")}:
             raise ValueError("mount, path_prefix and auth_mount may not hold '.' or '..' segments")
         need = {"token": [], "approle": ["role_id"], "kubernetes": ["role"]}[self.auth]
         if missing := [n for n in need if not getattr(self, n)]:
             raise ValueError(f"auth {self.auth} needs: {', '.join(missing)}")
         return self
+
+
+class VaultSettings(_VaultConnection):
+    mount: str = Field(default="secret", pattern=_PATH)
+    path_prefix: str = Field(default="", pattern=r"^([A-Za-z0-9_.-]+/)*$")  # e.g. "hadavin/acme/"
+    field: str = "value"
+    ttl_s: float = _TTL
+
+    def _paths(self) -> list[str]:
+        return [self.auth_mount or "", self.mount, self.path_prefix]
+
+
+class VaultTransitSettings(_VaultConnection):
+    """An `ed25519` Transit key, pinned to one version: checkpoints signed before a rotation must still
+    verify with the key that signed them."""
+
+    transit_mount: str = Field(default="transit", pattern=_PATH)
+    key_name: str = Field(pattern=r"^[A-Za-z0-9_.-]+$")
+    key_version: int = Field(ge=1)
+
+    def _paths(self) -> list[str]:
+        return [self.auth_mount or "", self.transit_mount, self.key_name]
 
 
 class AzureKeyVaultSettings(KindSettings):
@@ -192,33 +294,6 @@ class GcpSecretManagerSettings(KindSettings):
 class MountedFileSettings(KindSettings):
     dir: Path
     ttl_s: float = _TTL
-
-
-class S3ObjectLockSettings(KindSettings):
-    """The chain's anchor. COMPLIANCE only in prod with `retention_ack` (the client agreed retention in
-    writing); prod also needs the ack for GOVERNANCE (config.py, environment table)."""
-
-    kind: Literal["s3_object_lock"]
-    bucket: str
-    region: str
-    mode: Literal["GOVERNANCE", "COMPLIANCE"] = "GOVERNANCE"
-    retain_days: int = Field(default=1, ge=1)
-    retention_ack: bool = False
-
-
-class ChainSettings(KindSettings):
-    anchor: S3ObjectLockSettings | None = None
-    checkpoint_every: int = Field(default=100, ge=1)
-
-
-class Ed25519LocalSettings(KindSettings):
-    private_key_path: Path
-    passphrase_secret_name: str | None = None
-
-
-class AwsKmsSettings(KindSettings):
-    key_id: str
-    region: str
 
 
 class SlackSettings(KindSettings):
@@ -271,14 +346,17 @@ def _anthropic_hosts(s: Any) -> list[str]:
     return ["api.anthropic.com"]
 
 
-def _chain_hosts(s: Any) -> list[str]:
-    return [_aws_host(f"{s.anchor.bucket}.s3", s.anchor.region)] if s.anchor else []
+def _s3_anchor_hosts(s: Any) -> list[str]:
+    if s.endpoint_url:  # an S3-compatible store (MinIO, Ceph RGW)
+        return [urlsplit(s.endpoint_url).hostname or ""]
+    return [_aws_host(f"{s.bucket}.s3", s.region)]
 
 
 _BUILTIN = "hadavin_sdk.backends.builtin"
 _UNVERIFIED = "slice2-unverified"
-_ACTIONS = "hadavin_sdk.actions"
+_AUDIT = "hadavin_sdk.audit"
 _SIGNER = "hadavin_sdk.audit.signer"
+_ACTIONS = "hadavin_sdk.actions"
 
 # Build order (design §4.2): each capability may use only what is built before it, as ALLOWED says.
 TABLE: dict[str, dict[str, Entry]] = {
@@ -325,10 +403,56 @@ TABLE: dict[str, dict[str, Entry]] = {
         ),
         "aws_kms": Entry(
             AwsKmsSettings,
-            f"{_SIGNER}:build_kms",
+            f"{_SIGNER}_aws:build",
             extra="aws",
             status=_UNVERIFIED,
             hosts=_aws("kms"),
+        ),
+        "azure_key_vault_key": Entry(
+            AzureKeyVaultKeySettings,
+            f"{_SIGNER}_azure:build",
+            extra="azure",
+            status=_UNVERIFIED,
+            hosts=lambda s: [urlsplit(s.key_id).hostname or "", "login.microsoftonline.com"],
+        ),
+        "gcp_kms": Entry(
+            GcpKmsSettings,
+            f"{_SIGNER}_gcp:build",
+            extra="gcp",
+            status=_UNVERIFIED,
+            hosts=lambda s: ["cloudkms.googleapis.com", "oauth2.googleapis.com"],
+        ),
+        "vault_transit": Entry(
+            VaultTransitSettings,
+            f"{_SIGNER}_vault:build",
+            extra="signer",
+            status=_UNVERIFIED,
+            hosts=lambda s: [urlsplit(s.address).hostname or ""],
+        ),
+    },
+    # Where each signed checkpoint is also written, out of the runtime's reach (WORM).
+    "anchor": {
+        "none": Entry(KindSettings, f"{_BUILTIN}:no_anchor"),
+        "s3_object_lock": Entry(
+            S3ObjectLockSettings,
+            f"{_AUDIT}.anchor_s3:build",
+            extra="aws",
+            status=_UNVERIFIED,
+            hosts=_s3_anchor_hosts,
+        ),
+        "azure_immutable_blob": Entry(
+            AzureImmutableBlobSettings,
+            f"{_AUDIT}.anchor_azure:build",
+            extra="azure",
+            status=_UNVERIFIED,
+            hosts=lambda s: [urlsplit(s.account_url).hostname or "", "login.microsoftonline.com"],
+        ),
+        "gcs_retention_lock": Entry(
+            GcsRetentionLockSettings,
+            f"{_AUDIT}.anchor_gcs:build",
+            extra="gcp",
+            status=_UNVERIFIED,
+            hosts=lambda s: ["storage.googleapis.com", "oauth2.googleapis.com"],
         ),
     },
     "store": {
@@ -340,11 +464,7 @@ TABLE: dict[str, dict[str, Entry]] = {
     "audit": {
         "local_dir": Entry(LocalDirSettings, f"{_BUILTIN}:local_dir_audit"),
         "chain": Entry(
-            ChainSettings,
-            "hadavin_sdk.audit.chain:build",
-            extra="signer",
-            status=_UNVERIFIED,
-            hosts=_chain_hosts,
+            ChainSettings, "hadavin_sdk.audit.chain:build", extra="signer", status=_UNVERIFIED
         ),
     },
     "llm": {
@@ -405,8 +525,9 @@ TABLE: dict[str, dict[str, Entry]] = {
 ALLOWED: dict[str, frozenset[str]] = {
     "secrets": frozenset(),
     "signer": frozenset(),
+    "anchor": frozenset(),
     "store": frozenset(),
-    "audit": frozenset({"store", "signer"}),
+    "audit": frozenset({"store", "signer", "anchor"}),
     "llm": frozenset({"routes"}),
     "detector": frozenset({"llm"}),
     "channel": frozenset({"store"}),
@@ -416,6 +537,7 @@ ALLOWED: dict[str, frozenset[str]] = {
 DEFAULTS: dict[str, str] = {
     "secrets": "fake",
     "signer": "none",
+    "anchor": "none",
     "store": "memory",
     "detector": "regex",
     "channel": "fake",
@@ -434,4 +556,4 @@ DEV_ONLY: frozenset[tuple[str, str]] = frozenset(
     }
 )
 # Kinds refused only in `prod` (design 4.6); the anchor rules are in config.py.
-NOT_PROD: frozenset[tuple[str, str]] = frozenset({("signer", "ed25519_local")})
+NOT_PROD: frozenset[tuple[str, str]] = frozenset({("signer", "none"), ("anchor", "none")})

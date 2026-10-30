@@ -47,6 +47,7 @@ class Backends(_Strict):
 
     secrets: KindSettings
     signer: KindSettings
+    anchor: KindSettings
     store: KindSettings
     audit: KindSettings
     llm: KindSettings
@@ -176,25 +177,26 @@ class Config(_Strict):
                     f"system {name}: base_url must be https "
                     f"(http only for loopback with allow_insecure_loopback): {system.base_url}"
                 )
-        if self.environment != "dev":  # environment table, design 4.6
+        refused = []  # environment table, design 4.6: every refusal at once, so one fix round is enough
+        if self.environment != "dev":
             refused = [
                 f"{c}: {s.kind}" for c, s in self.backends.entries() if (c, s.kind) in DEV_ONLY
             ]
             refused += ["allow_insecure_loopback"] if self.allow_insecure_loopback else []
-            if refused:
-                raise ValueError(
-                    f"environment {self.environment}: refused outside dev: {', '.join(refused)}"
-                )
-        if refused := _anchor_refusals(self.environment, self.backends):
+        refused += _anchor_refusals(self.environment, self.backends)
+        if refused:
             raise ValueError(f"environment {self.environment}: refused: {', '.join(refused)}")
         return self
 
 
 def _anchor_refusals(environment: str, b: Backends) -> list[str]:
-    """Environment table (design 4.6): prod needs a non-local signer and an anchor whose retention the client
-    agreed (`retention_ack`); COMPLIANCE mode (undeletable even by the account root) only then."""
-    anchor = getattr(b.audit, "anchor", None)
+    """Environment table (design 4.6). Prod needs a signer and an anchor whose retention the client agreed
+    (`retention_ack`); COMPLIANCE mode (undeletable even by the account root) only then. `ed25519_local` in
+    prod only with its key from the secrets kind (never a file in the image), and only beside that anchor."""
+    anchor = None if b.anchor.kind == "none" else b.anchor
     refused = []
+    if anchor is not None and b.audit.kind != "chain":
+        refused.append(f"anchor {anchor.kind} needs backends.audit kind chain")
     if (
         anchor is not None
         and anchor.mode == "COMPLIANCE"
@@ -203,8 +205,10 @@ def _anchor_refusals(environment: str, b: Backends) -> list[str]:
         refused.append("anchor mode COMPLIANCE outside prod or without retention_ack")
     if environment == "prod":
         refused += [f"{c}: {s.kind}" for c, s in b.entries() if (c, s.kind) in NOT_PROD]
-        if b.audit.kind == "chain" and (anchor is None or not anchor.retention_ack):
-            refused.append("audit chain without an anchor with retention_ack")
+        if anchor is not None and not anchor.retention_ack:
+            refused.append(f"anchor {anchor.kind} without retention_ack")
+        if b.signer.kind == "ed25519_local" and b.signer.private_key_path is not None:
+            refused.append("signer ed25519_local with a key file (use private_key_secret_name)")
     return refused
 
 

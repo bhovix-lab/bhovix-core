@@ -25,9 +25,21 @@ anthropic = ["anthropic[vertex]==2.1.0"]
 aws = ["boto3==1.43.118", "cryptography==50.0.2"]
 signer = ["cryptography==50.0.2"]
 pg = ["psycopg[binary]==3.3.6"]
-# Cloud-neutral secret stores (slice 2 P4b). `vault` and `mounted_file` use the standard library: no extra.
-azure = ["azure-identity==1.26.0", "azure-keyvault-secrets==4.11.3"]
-gcp = ["google-cloud-secret-manager==2.31.0"]
+# Cloud-neutral backends: secret stores (P4b; `vault` and `mounted_file` need no extra), audit signers and
+# anchors (P3b).
+azure = [
+    "azure-identity==1.26.0",
+    "azure-keyvault-keys==4.11.3",
+    "azure-keyvault-secrets==4.11.3",
+    "azure-storage-blob==12.31.0",
+    "cryptography==50.0.2",
+]
+gcp = [
+    "cryptography==50.0.2",
+    "google-cloud-kms==3.18.0",
+    "google-cloud-secret-manager==2.31.0",
+    "google-cloud-storage==3.17.1",
+]
 
 [project.scripts]
 hadavin-sdk = "hadavin_sdk.cli:main"
