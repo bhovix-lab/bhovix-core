@@ -55,7 +55,7 @@ def test_credentials_are_masked_jwt_and_api_keys():
     jwt = JWT
     assert jwt not in redact(f"authorization bearer {jwt}").text
     for key in (
-        "sk-ant-api03-AbCdEf12345678",
+        "sk-" + "ant-" + "api03-AbCdEf" + "12345678",
         "sk-proj-abcdef123456",
         "ghp" + "_" + "AbCdEf" + "1234567890abcd",
         AWS_ACCESS_KEY_ID,
@@ -183,7 +183,7 @@ def test_high_value_credentials_in_logs_are_masked():
         ("db_password=SuperSecret123", "SuperSecret123"),
         ("client_secret: " + secret_value("my-oauth"), secret_value("my-oauth")),
         ("token " + "xoxb" + "-123456789-abcdefABCDEF", "xoxb" + "-123456789-abcdefABCDEF"),
-        ("deploy key glpat-abcDEF1234567890", "glpat-abcDEF1234567890"),
+        ("deploy key " + "glpat" + "-abcDEF1234567890", "glpat" + "-abcDEF1234567890"),
     ]
     for text, secret in secrets:
         assert secret not in redact(text).text, f"{secret!r} leaked to the model"
