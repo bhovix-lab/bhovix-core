@@ -2,20 +2,22 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from typing import Protocol
 
+from hadavin_sdk.approvals.gate import sanitise_text
 from hadavin_sdk.guard.redact import redact
 from hadavin_sdk.models import ApprovalDecision, ApprovalRequest
 
-# Copied then edited from WARDEN gate.py: no clickable links or images in text people act on.
-_LINK = re.compile(r"(?i)\b(?:https?|ftp)://\S+|\bwww\.\S+|!\[[^\]]*\]\([^)]*\)|<[^>|]+\|[^>]*>")
-
 
 def clean(text: str) -> str:
-    text, _ = redact(text)
-    return _LINK.sub("[link removed]", text)
+    """Redact, then WARDEN's G3 cleaning (`gate.sanitise_text`): no link, image, HTML, mention, control
+    character or forged markdown structure survives in text a person acts on."""
+    first = redact(text)
+    # Sanitising removes invisible and control characters and tags, which can join a split secret
+    # (`AKIA` + zero-width space + `IOSF...`): redact the cleaned text again (WARDEN's G5 re-scan), in the
+    # same placeholder namespace.
+    return redact(sanitise_text(first.text), mapping=first.mapping).text
 
 
 class Channel(Protocol):
