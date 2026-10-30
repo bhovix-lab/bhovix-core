@@ -15,7 +15,9 @@ import sys
 
 from bhovix_core import evals
 from bhovix_core.app import make_llm
+from bhovix_core.audit import AuditUnavailable
 from bhovix_core.config import load_config
+from bhovix_core.limits import Limits
 from bhovix_core.registry import load_registry
 
 
@@ -52,6 +54,28 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     raise NotImplementedError("shared-store kill switch arrives with store.postgres")
+
+
+def kill_switch(limits: Limits, action: str, by: str) -> int:
+    """Run stop/reset for a caller (the CLI once a shared store exists, or an in-process admin hook).
+
+    Exit codes: 0 done; 3 reset refused because the audit store is unavailable (the switch stays ON).
+    """
+    if action == "stop":
+        limits.stop(by)
+        print(f"kill switch ON (by {by})")
+        return 0
+    try:
+        limits.reset(by)
+    except AuditUnavailable:
+        print(
+            "refused: the audit store is unavailable, so the reset cannot be recorded. "
+            "The kill switch stays ON. Fix the audit store, then try again.",
+            file=sys.stderr,
+        )
+        return 3
+    print(f"kill switch OFF (by {by})")
+    return 0
 
 
 if __name__ == "__main__":

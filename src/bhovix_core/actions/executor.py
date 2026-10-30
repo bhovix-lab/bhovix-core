@@ -17,6 +17,7 @@ from urllib.parse import quote
 
 from bhovix_core.actions.contract import ActionContract
 from bhovix_core.actions.secrets import SecretProvider
+from bhovix_core.config import url_allowed
 from bhovix_core.guard.egress import EgressRefused, egress_check
 from bhovix_core.models import ApprovalDecision, GateDecision, Plan, RunResult
 from bhovix_core.registry import Registry
@@ -61,8 +62,8 @@ class Executor:
 
         def call(method: str, path: str, body: Any = None, headers: dict | None = None):
             url = base + path
-            if not url.startswith(("http://", "https://")):
-                raise EgressRefused("only http and https are allowed")
+            if not url_allowed(url, cfg.allow_insecure_loopback):  # re-checked at call time
+                raise EgressRefused("https only (http only for loopback when explicitly allowed)")
             egress_check(url, cfg.egress_hosts)
             data = None if body is None else json.dumps(body).encode("utf-8")
             req = urllib.request.Request(url, data=data, method=method)  # noqa: S310 - scheme checked

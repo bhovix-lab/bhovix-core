@@ -32,6 +32,8 @@ class LocalDirSink:
         self._pending: list[AuditEvent] = []
 
     def _indexed(self, key: str) -> bool:
+        # ponytail: O(n) scan of index.jsonl, only on the rare duplicate/half-write path of the local sink.
+        # Fine at laptop scale; keep an in-memory key set (or let S3's object listing answer) if it ever matters.
         if not self.index.exists():
             return False
         return any(json.loads(x)["key"] == key for x in self.index.read_text("utf-8").splitlines())

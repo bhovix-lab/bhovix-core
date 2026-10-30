@@ -57,16 +57,17 @@ class Backends(_Strict):
 _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 
 
+def url_allowed(url: str, allow_insecure_loopback: bool) -> bool:
+    """The bearer token travels with every call: https only. Plain http only to this machine, and only when
+    the config sets ``allow_insecure_loopback: true`` (the local test fixture). Used at load and at call time."""
+    parts = urlsplit(url)
+    if parts.scheme == "https":
+        return True
+    return parts.scheme == "http" and allow_insecure_loopback and parts.hostname in _LOOPBACK
+
+
 class System(_Strict):
     base_url: str
-
-    @model_validator(mode="after")
-    def _https_unless_loopback(self) -> System:
-        """The bearer token travels with every call: plain http only to this machine (local fakes)."""
-        url = urlsplit(self.base_url)
-        if url.scheme == "https" or (url.scheme == "http" and url.hostname in _LOOPBACK):
-            return self
-        raise ValueError(f"base_url must be https (http only for loopback): {self.base_url}")
 
 
 class SlackConfig(_Strict):
@@ -94,10 +95,17 @@ class Config(_Strict):
     systems: dict[str, System] = {}
     slack: SlackConfig | None = None
     egress_hosts: frozenset[str] = frozenset()
+    allow_insecure_loopback: bool = False  # true only in the local test fixture config
     root: Path
 
     @model_validator(mode="after")
     def _cross_checks(self) -> Config:
+        for name, system in self.systems.items():
+            if not url_allowed(system.base_url, self.allow_insecure_loopback):
+                raise ValueError(
+                    f"system {name}: base_url must be https "
+                    f"(http only for loopback with allow_insecure_loopback): {system.base_url}"
+                )
         names = self.backends.names()
         if names & AWS_BACKENDS and not self.region:
             raise ValueError("region is required when an AWS backend is set")

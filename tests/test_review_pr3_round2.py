@@ -242,3 +242,38 @@ def test_late_decision_after_deadline_is_refused(app):
     clock = app.approvals.clock
     app.approvals.clock = lambda: clock() + timedelta(hours=5)
     assert _approve(app, req) == (False, "step_expired")
+
+
+# verifier (a)+(b): https at load AND at call time; loopback http only behind the explicit flag
+def test_loopback_http_needs_the_explicit_flag(cfg_dir):
+    _edit(cfg_dir / "config.yaml", lambda d: d.pop("allow_insecure_loopback") and None)
+    with pytest.raises(ConfigError, match="allow_insecure_loopback"):
+        load_config(cfg_dir)
+
+
+def test_call_time_https_check(live_cfg_dir, fake_system):
+    from bhovix_core.actions.executor import Executor
+
+    cfg = load_config(live_cfg_dir)
+    # bypass load-time validation (model_copy does not validate) to prove the call-time check holds
+    reg = load_registry(cfg.model_copy(update={"allow_insecure_loopback": False}))
+    ex = Executor(reg, FakeSecretProvider({"fixture-token": fake_system.token}))
+    plan = _plan()
+    assert ex.execute(plan, *_approved(plan)).error_code == "egress_refused"
+    assert fake_system.creates == 0
+
+
+# verifier (c): a reset that cannot be audited is refused with a clear message; the switch stays on
+def test_kill_switch_reset_refused_when_audit_down(cfg_dir, capsys, monkeypatch):
+    from bhovix_core.cli import kill_switch
+
+    rt, _ = build_rt(cfg_dir)
+    assert kill_switch(rt.limits, "stop", "user:a") == 0
+
+    def down(event):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(rt.audit, "_write", down)
+    assert kill_switch(rt.limits, "reset", "user:a") == 3
+    assert "stays ON" in capsys.readouterr().err
+    assert "kill_switch" in rt.limits.blocked("test-agent")
