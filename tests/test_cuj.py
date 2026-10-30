@@ -236,3 +236,27 @@ def test_cli_limits_reset_is_audited(cfg_dir, capsys):
     assert cli.main(["--config", str(cfg_dir), "limits", "reset", "--by", "user:a"]) == 0
     events = (cfg_dir / "audit" / "index.jsonl").read_text(encoding="utf-8")
     assert '"run_id": "-"' in events
+
+
+def test_golden_input_ref_cannot_escape_inputs_dir(cfg_dir):
+    from bhovix_core.config import ConfigError
+
+    golden = cfg_dir.parent / "golden" / "test-agent.jsonl"
+    golden.write_text(
+        '{"id": "x", "input_ref": "../config/config.yaml", "expected": {}}\n', encoding="utf-8"
+    )
+    with pytest.raises(ConfigError, match="escapes"):
+        _qualify(cfg_dir)
+
+
+def test_prompt_file_cannot_escape_config_dir(cfg_dir):
+    import yaml
+
+    from bhovix_core.config import ConfigError
+
+    path = cfg_dir / "agents.yaml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data[0]["prompt_file"] = "../inputs/create.txt"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    with pytest.raises(ConfigError, match="escapes"):
+        load_registry(load_config(cfg_dir))

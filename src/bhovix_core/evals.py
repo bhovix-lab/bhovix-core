@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 
+from bhovix_core.config import confined
 from bhovix_core.llm.protocol import LLM
 from bhovix_core.models import GateRun
 from bhovix_core.registry import Registry
@@ -18,7 +19,7 @@ _ASK = "Process the attached request document."
 def gate(registry: Registry, llm: LLM, agent_id: str) -> GateRun:
     cfg = registry.config
     agent = registry.agents[agent_id]
-    golden_path = cfg.golden_dir / f"{agent_id}.jsonl"
+    golden_path = confined(cfg.golden_dir, f"{agent_id}.jsonl")
     golden_bytes = golden_path.read_bytes()
     cases = [json.loads(line) for line in golden_bytes.decode("utf-8").splitlines() if line.strip()]
     tools = [
@@ -32,7 +33,8 @@ def gate(registry: Registry, llm: LLM, agent_id: str) -> GateRun:
             system=registry.prompt(agent_id),
             route=agent.model_route,
             tools=tools,
-            documents=[(cfg.inputs_dir / case["input_ref"]).read_bytes()],
+            # input_ref comes from a file: confined to inputs_dir (no "../" or absolute escapes).
+            documents=[confined(cfg.inputs_dir, case["input_ref"]).read_bytes()],
         )
         got = (
             {"action": reply.tool_calls[0].name, "inputs": reply.tool_calls[0].input}

@@ -103,6 +103,15 @@ def _read_yaml(path: Path) -> dict:
     return data or {}
 
 
+def confined(base: Path, relative: str) -> Path:
+    """``base / relative``, refused if it resolves outside ``base`` (no ``..`` or absolute escapes)."""
+    root = Path(base).resolve()
+    path = (root / relative).resolve()
+    if not path.is_relative_to(root):
+        raise ConfigError(f"path escapes its folder: {relative}")
+    return path
+
+
 def load_config(config_dir: Path | None = None) -> Config:
     root = Path(config_dir) if config_dir else Settings().config_dir  # type: ignore[call-arg]
     raw = _read_yaml(root / "config.yaml")

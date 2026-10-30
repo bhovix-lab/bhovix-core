@@ -13,7 +13,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from bhovix_core.actions.contract import ActionContract
-from bhovix_core.config import Config, ConfigError, Money
+from bhovix_core.config import Config, ConfigError, Money, confined
 from bhovix_core.identity import Principal
 from bhovix_core.models import ChainStep, sha256_hex
 
@@ -51,12 +51,14 @@ class Registry:
     chains: dict[str, Chain]
     contracts: dict[str, ActionContract]
 
+    def _prompt_path(self, agent_id: str):
+        return confined(self.config.root, self.agents[agent_id].prompt_file)
+
     def prompt(self, agent_id: str) -> str:
-        return (self.config.root / self.agents[agent_id].prompt_file).read_text(encoding="utf-8")
+        return self._prompt_path(agent_id).read_text(encoding="utf-8")
 
     def prompt_sha256(self, agent_id: str) -> str:
-        data = (self.config.root / self.agents[agent_id].prompt_file).read_bytes()
-        return hashlib.sha256(data).hexdigest()
+        return hashlib.sha256(self._prompt_path(agent_id).read_bytes()).hexdigest()
 
     def config_hash(self, agent_id: str) -> str:
         agent = self.agents[agent_id]
@@ -103,8 +105,11 @@ def _cross_check(config, agents, chains, contracts) -> list[str]:
         if a.model_route not in config.routes:
             out.append(f"agent {a.id}: unknown model_route {a.model_route}")
         out += [f"agent {a.id}: no contract for {x}" for x in a.scope_allowed if x not in contracts]
-        if not (config.root / a.prompt_file).is_file():
-            out.append(f"agent {a.id}: prompt_file missing")
+        try:
+            if not confined(config.root, a.prompt_file).is_file():
+                out.append(f"agent {a.id}: prompt_file missing")
+        except ConfigError:
+            out.append(f"agent {a.id}: prompt_file escapes the config folder")
     for c in chains.values():
         if not c.steps:
             out.append(f"chain {c.id}: no steps")
