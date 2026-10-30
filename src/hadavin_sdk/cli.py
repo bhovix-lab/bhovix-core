@@ -1,9 +1,9 @@
 """hadavin-sdk CLI.
 
-  hadavin-sdk gate <agent> [--config DIR]              exit 0 when green, 1 when below the threshold
-  hadavin-sdk limits stop|reset --by WHO [--config DIR]  refused until a shared store exists (exit 2)
+  hadavin-sdk [--config DIR] gate <agent>                exit 0 when green, 1 when below the threshold
+  hadavin-sdk [--config DIR] limits stop|reset --by WHO  refused until a shared store exists (exit 2)
 
-``--config`` overrides ``HADAVIN_CONFIG_DIR``. From a source checkout use ``uv run python -m hadavin_sdk.cli`` so
+``--config`` goes before the subcommand and overrides ``HADAVIN_CONFIG_DIR``. From a source checkout use ``uv run python -m hadavin_sdk.cli`` so
 the current folder (and its check modules) is importable.
 """
 
