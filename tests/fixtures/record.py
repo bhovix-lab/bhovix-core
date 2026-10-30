@@ -32,6 +32,8 @@ ANSWERS: dict[str, list[dict]] = {
         )
     ],
     "bad.txt": [text("not json at all"), text('{"title": "", "amount": "x"}')],
+    "loop.txt": [tool("echo", text="again")] * 5,
+    "chat.txt": [text("Nothing to do here.")],
 }
 
 
