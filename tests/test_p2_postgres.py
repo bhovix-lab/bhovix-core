@@ -196,6 +196,10 @@ def test_plan_hash_survives_a_non_utc_timestamp():
     }
     at = datetime(2026, 10, 31, 1, 0, tzinfo=ist)
     assert Plan(**kw, created_at=at).hash() == Plan(**kw, created_at=at.astimezone(UTC)).hash()
+    utc_plan = Plan(**kw, created_at=at)
+    assert (
+        utc_plan.model_copy(update={"created_at": at}).hash() == utc_plan.hash()
+    )  # skips validation
     with pytest.raises(ValueError, match="timezone-aware"):
         Plan(**kw, created_at=datetime(2026, 10, 31))  # noqa: DTZ001 - the naive value under test
 
