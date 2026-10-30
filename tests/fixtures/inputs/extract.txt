@@ -1,0 +1,3 @@
+Title: Monitor arm
+Amount: 59.90
+Action: create_draft_record

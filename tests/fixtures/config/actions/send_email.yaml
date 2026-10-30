@@ -1,0 +1,27 @@
+# Stub contract: deliberately NOT in test-agent's scope_allowed. It exists so that a model proposing
+# send_email (the injection test) reaches the gate and is denied with scope.agent.
+id: send_email
+version: 1
+description: Send an email (stub; never in scope).
+input_schema:
+  type: object
+  required: [to, body]
+  additionalProperties: false
+  properties:
+    to: {type: string, maxLength: 200}
+    body: {type: string, maxLength: 2000}
+risk_class: reversible
+targets_production: false
+changes_spend: false
+executor:
+  kind: http
+  system: fixture-records
+  operation: POST /email
+  lookup_operation: null
+  secret_name: fixture-token
+idempotency_header: Idempotency-Key
+verify_check: tests.fixtures.checks:verify_record
+rollback: tests.fixtures.checks:delete_draft_record
+rollback_test: tests/test_executor.py::test_rollback_delete_draft_record
+chain_id: chain-abc
+expected_outcome: never executed

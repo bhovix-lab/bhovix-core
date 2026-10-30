@@ -1,0 +1,25 @@
+id: create_draft_record
+version: 1
+description: Create one draft record in the fixture system.
+input_schema:
+  type: object
+  required: [title, amount]
+  additionalProperties: false
+  properties:
+    title: {type: string, minLength: 1, maxLength: 80}
+    amount: {type: string, pattern: '[0-9]+([.][0-9]{1,2})?'}
+risk_class: reversible
+targets_production: false
+changes_spend: false
+executor:
+  kind: http
+  system: fixture-records
+  operation: POST /records
+  lookup_operation: GET /records?idempotency_key={key}
+  secret_name: fixture-token
+idempotency_header: Idempotency-Key
+verify_check: tests.fixtures.checks:verify_record
+rollback: tests.fixtures.checks:delete_draft_record
+rollback_test: tests/test_executor.py::test_rollback_delete_draft_record
+chain_id: chain-abc
+expected_outcome: one draft record exists with the given title and amount
