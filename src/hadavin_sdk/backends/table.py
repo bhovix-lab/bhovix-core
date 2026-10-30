@@ -130,6 +130,57 @@ class AwsSecretsManagerSettings(KindSettings):
     ttl_s: float = Field(default=300, ge=0)  # 0 = no cache
 
 
+_TTL = Field(default=300, ge=0)  # seconds a secret value is cached; 0 = no cache
+
+
+class VaultSettings(KindSettings):
+    address: str  # https; plain http only to this machine (a dev server)
+    auth: Literal["token", "approle", "kubernetes"] = "token"
+    mount: str = Field(default="secret", pattern=r"^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$")
+    path_prefix: str = Field(default="", pattern=r"^([A-Za-z0-9_.-]+/)*$")  # e.g. "hadavin/acme/"
+    field: str = "value"
+    namespace: str | None = None
+    token_env: str = "VAULT_TOKEN"  # noqa: S105 - auth token: the variable name
+    role_id: str | None = None  # auth: approle (an identifier, not a secret)
+    secret_id_env: str = "VAULT_SECRET_ID"  # noqa: S105 - auth approle: the variable name
+    role: str | None = None  # auth: kubernetes
+    jwt_path: Path = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")  # auth: kubernetes
+    # Default: the auth name. Nested mounts (e.g. team-a/kubernetes) are allowed.
+    auth_mount: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$")
+    ca_cert: Path | None = None
+    timeout_s: float = Field(default=10.0, gt=0)
+    ttl_s: float = _TTL
+
+    @model_validator(mode="after")
+    def _checks(self) -> VaultSettings:
+        url = urlsplit(self.address)
+        if url.scheme != "https" and not (url.scheme == "http" and url.hostname in _LOOPBACK):
+            raise ValueError("address must be https (plain http only to this machine)")
+        segments = {*self.mount.split("/"), *self.path_prefix.split("/")}
+        segments |= set((self.auth_mount or "").split("/"))
+        if {".", ".."} & segments:
+            raise ValueError("mount, path_prefix and auth_mount may not hold '.' or '..' segments")
+        need = {"token": [], "approle": ["role_id"], "kubernetes": ["role"]}[self.auth]
+        if missing := [n for n in need if not getattr(self, n)]:
+            raise ValueError(f"auth {self.auth} needs: {', '.join(missing)}")
+        return self
+
+
+class AzureKeyVaultSettings(KindSettings):
+    vault_url: str = Field(pattern=r"^https://")  # e.g. https://<vault-name>.vault.azure.net
+    ttl_s: float = _TTL
+
+
+class GcpSecretManagerSettings(KindSettings):
+    project_id: str = Field(pattern=_NAME)
+    ttl_s: float = _TTL
+
+
+class MountedFileSettings(KindSettings):
+    dir: Path
+    ttl_s: float = _TTL
+
+
 class S3ObjectLockSettings(KindSettings):
     """The chain's anchor. COMPLIANCE only in prod with `retention_ack` (the client agreed retention in
     writing); prod also needs the ack for GOVERNANCE (config.py, environment table)."""
@@ -172,6 +223,7 @@ class Entry:
 
 _BUILTIN = "hadavin_sdk.backends.builtin"
 _UNVERIFIED = "slice2-unverified"
+_ACTIONS = "hadavin_sdk.actions"
 _SIGNER = "hadavin_sdk.audit.signer"
 
 # Build order (design §4.2): each capability may use only what is built before it, as ALLOWED says.
@@ -186,6 +238,22 @@ TABLE: dict[str, dict[str, Entry]] = {
             "hadavin_sdk.actions.secrets_aws:build",
             extra="aws",
             status=_UNVERIFIED,
+        ),
+        "vault": Entry(VaultSettings, f"{_ACTIONS}.secrets_vault:build", status=_UNVERIFIED),
+        "azure_key_vault": Entry(
+            AzureKeyVaultSettings,
+            f"{_ACTIONS}.secrets_azure:build",
+            extra="azure",
+            status=_UNVERIFIED,
+        ),
+        "gcp_secret_manager": Entry(
+            GcpSecretManagerSettings,
+            f"{_ACTIONS}.secrets_gcp:build",
+            extra="gcp",
+            status=_UNVERIFIED,
+        ),
+        "mounted_file": Entry(
+            MountedFileSettings, f"{_ACTIONS}.secrets_file:build", status=_UNVERIFIED
         ),
     },
     "signer": {

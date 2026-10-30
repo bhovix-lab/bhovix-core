@@ -25,6 +25,9 @@ anthropic = ["anthropic[vertex]==2.1.0"]
 aws = ["boto3==1.43.118", "cryptography==50.0.2"]
 signer = ["cryptography==50.0.2"]
 pg = ["psycopg[binary]==3.3.6"]
+# Cloud-neutral secret stores (slice 2 P4b). `vault` and `mounted_file` use the standard library: no extra.
+azure = ["azure-identity==1.26.0", "azure-keyvault-secrets==4.11.3"]
+gcp = ["google-cloud-secret-manager==2.31.0"]
 
 [project.scripts]
 hadavin-sdk = "hadavin_sdk.cli:main"
@@ -43,6 +46,9 @@ build-backend = "uv_build"
 [tool.uv]
 # Release cooldown comes from Dependabot (7 days); pins are exact so the lock only changes through its PRs.
 default-groups = ["dev"]
+# Transitive packages of the azure/gcp extras whose newest releases were under 7 days old when locked
+# (2026-10-31); Dependabot moves these once they age.
+exclude-newer-package = { google-api-core = "2026-10-24T00:00:00Z", grpcio = "2026-10-24T00:00:00Z", grpcio-status = "2026-10-24T00:00:00Z" }
 
 [tool.ruff]
 line-length = 100
