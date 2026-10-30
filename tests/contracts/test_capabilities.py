@@ -4,8 +4,6 @@ Checks added later, with the kinds that can meet them: Secrets `ttl_s` (P4), LLM
 (P5), detector lists (P6), the channel receiver (P7).
 """
 
-import hashlib
-import hmac
 import json
 import time
 from datetime import timedelta
@@ -13,6 +11,7 @@ from urllib.parse import urlencode
 
 import pytest
 
+from hadavin_sdk.approvals import hmac_v0
 from hadavin_sdk.audit import AuditUnavailable, DuplicateEvent
 from hadavin_sdk.guard.injection import AnyOf, injection_check
 from hadavin_sdk.models import ApprovalRequest, AuditEvent, ChainStep, Reply, Verdict, now
@@ -139,11 +138,11 @@ def _req():
     )
 
 
-def _callback(req, user, ts, secret):
+def _callback(channel, req, user, ts, secret):
+    """Signed with the shared hmac_v0 scheme under the channel's own header prefix."""
     payload = {"user": {"id": user}, "actions": [{"value": f"{req.approval_id}|h|0|approve"}]}
     body = urlencode({"payload": json.dumps(payload)}).encode()
-    sig = hmac.new(secret.encode(), f"v0:{ts}:".encode() + body, hashlib.sha256).hexdigest()
-    return {"X-Slack-Request-Timestamp": str(ts), "X-Slack-Signature": "v0=" + sig}, body
+    return hmac_v0.sign(body, ts, secret, channel.header_prefix), body
 
 
 def test_channel_send_update_notify(channel_factory):
@@ -155,10 +154,11 @@ def test_channel_send_update_notify(channel_factory):
 
 def test_channel_parse_decision_verifies_the_callback(channel_factory):
     channel, req, ts = channel_factory(SIG), _req(), int(time.time())
-    headers, body = _callback(req, "U1", ts, SIG)
+    headers, body = _callback(channel, req, "U1", ts, SIG)
     decision = channel.parse_decision(headers, body, ts)
     assert (decision.approval_id, decision.decision) == (req.approval_id, "approve")
-    assert decision.approver_id.endswith("U1")  # from the verified request, never the body alone
-    assert channel.parse_decision(*_callback(req, "U1", ts, "wrong"), ts) is None
+    # from the verified request, never the body alone; prefixed with the channel's own name
+    assert (decision.approver_id, decision.channel) == (f"{channel.name}:U1", channel.name)
+    assert channel.parse_decision(*_callback(channel, req, "U1", ts, SIG[::-1]), ts) is None
     assert channel.parse_decision(headers, body, ts + 3600) is None  # stale
     assert channel_factory("").parse_decision(headers, body, ts) is None  # no secret: refuse all

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Protocol
 
+from hadavin_sdk.approvals import hmac_v0
 from hadavin_sdk.approvals.gate import sanitise_text
 from hadavin_sdk.guard.redact import redact
 from hadavin_sdk.models import ApprovalDecision, ApprovalRequest
@@ -35,10 +36,12 @@ class Channel(Protocol):
 
 
 class FakeChannel:
-    """Records what would be sent. Callbacks are verified exactly like Slack's (v0 HMAC) with a test secret;
-    with no secret every callback is refused."""
+    """Records what would be sent. Callbacks are verified with the shared ``hmac_v0`` scheme under its own
+    ``X-Hadavin-*`` headers and a test secret (with no secret every callback is refused); approvers are
+    ``fake:<id>``."""
 
     name = "fake"
+    header_prefix = "X-Hadavin"  # the shared hmac_v0 scheme under neutral header names
 
     def __init__(self, signing_secret: str = "") -> None:
         self._secret = signing_secret
@@ -59,7 +62,6 @@ class FakeChannel:
     def parse_decision(
         self, headers: Mapping[str, str], body: bytes, now_ts: float
     ) -> ApprovalDecision | None:
-        from hadavin_sdk.approvals.slack import parse_decision
-
-        d = parse_decision(headers, body, now_ts, self._secret)
-        return None if d is None else d.model_copy(update={"channel": self.name})
+        return hmac_v0.parse_button(
+            headers, body, now_ts, self._secret, prefix=self.header_prefix, channel=self.name
+        )
