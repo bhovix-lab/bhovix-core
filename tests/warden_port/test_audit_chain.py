@@ -11,6 +11,7 @@ cases (P2's `store.migrate` owns roles and grants).
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 import threading
@@ -22,7 +23,6 @@ from pathlib import Path
 import boto3
 import pytest
 import yaml
-from botocore.exceptions import ClientError
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from moto import mock_aws
 
@@ -30,14 +30,15 @@ from hadavin_sdk import cli
 from hadavin_sdk.actions.secrets import FakeSecretProvider
 from hadavin_sdk.audit import chain as audit
 from hadavin_sdk.audit.anchor_s3 import S3Anchor
+from hadavin_sdk.audit.anchors import AnchorConflict
 from hadavin_sdk.audit.signer import (
-    KmsSigner,
     LocalSigner,
     generate_key,
     load_private_key,
     load_public_key,
     verify_signature,
 )
+from hadavin_sdk.audit.signer_aws import KmsSigner
 from hadavin_sdk.backends import make
 from hadavin_sdk.backends.table import (
     AwsKmsSettings,
@@ -88,14 +89,14 @@ def _raw(log):
     return db
 
 
-def _rechain(db, edit_seq, body, key=None):
+def _rechain(db, edit_seq, result, key=None):
     """The careful attacker: change one row, recompute every later hash (and re-sign with the key)."""
     rows = db.execute(
         "SELECT seq, at, run_id, kind, body FROM audit_entries ORDER BY seq"
     ).fetchall()
     prev = audit.GENESIS
     for seq, at, run_id, kind, b in rows:
-        b = body if seq == edit_seq else b
+        b = json.dumps({**json.loads(b), "result": result}) if seq == edit_seq else b
         digest = audit._hash(prev, seq, at, run_id, kind, b)
         db.execute(
             "UPDATE audit_entries SET body = ?, prev = ?, hash = ? WHERE seq = ?",
@@ -153,7 +154,7 @@ def test_a_deleted_row_is_found(key):
 def test_rewriting_a_row_and_recomputing_every_later_hash_is_caught_by_the_signature(key):
     """The chain is internally consistent again afterwards; only the signed checkpoint remembers."""
     log = _log(key)
-    _rechain(_raw(log), 2, '{"result":"approved by someone else"}')
+    _rechain(_raw(log), 2, "approved by someone else")
     assert log.verify().problems == ["checkpoint 5 was signed over a different history"]
 
 
@@ -275,7 +276,7 @@ def bucket():
 def test_a_history_rewritten_and_re_signed_with_the_key_is_caught_by_its_anchors(key, bucket):
     log = _log(key, rows=3, anchor=S3Anchor(BUCKET, bucket))
     assert log.verify().ok
-    _rechain(_raw(log), 1, '{"result":"attacker"}', key)
+    _rechain(_raw(log), 1, "attacker", key)
     anchors = log.anchor
     log.anchor = None
     assert log.verify().ok, "with the key alone, the rewrite is invisible: why anchors exist"
@@ -329,11 +330,12 @@ def test_the_backend_table_builds_the_kms_signer_and_the_anchor_from_config(monk
     monkeypatch.setattr(boto3, "client", fake_client)
     signer = make("signer", AwsKmsSettings(kind="aws_kms", key_id=KEY_ALIAS, region=REGION))
     assert isinstance(signer, KmsSigner) and signer.key_id == KEY_ALIAS
-    anchor = S3ObjectLockSettings(
+    settings = S3ObjectLockSettings(
         kind="s3_object_lock", bucket=BUCKET, region=REGION, retain_days=30
     )
+    anchor = make("anchor", settings)  # its own capability, handed to the audit through Deps
     store = make("store", KindSettings(kind="memory"))
-    log = make("audit", ChainSettings(kind="chain", anchor=anchor), store=store, signer=signer)
+    log = make("audit", ChainSettings(kind="chain"), store=store, signer=signer, anchor=anchor)
     assert (log.anchor.bucket, log.anchor.mode, log.anchor.retain) == (
         BUCKET,
         "GOVERNANCE",
@@ -342,7 +344,28 @@ def test_the_backend_table_builds_the_kms_signer_and_the_anchor_from_config(monk
     bounded = (3, 5, 2)  # timeouts, and at most 2 requests in total
     assert made == [("kms", REGION, *bounded), ("s3", REGION, *bounded)]
     with pytest.raises(ConfigError, match="needs a signer"):
-        make("audit", ChainSettings(kind="chain", anchor=anchor), store=store)
+        make("audit", ChainSettings(kind="chain"), store=store, anchor=anchor)
+
+
+def test_an_s3_compatible_store_is_reached_through_endpoint_url(monkeypatch):
+    """MinIO or Ceph RGW with Object Lock: the same kind, another endpoint (https, or http to loopback)."""
+    made = []
+    monkeypatch.setattr(boto3, "client", lambda service, **kw: made.append(kw) or object())
+    local = "http://127.0.0.1:9000"
+    make(
+        "anchor",
+        S3ObjectLockSettings(
+            kind="s3_object_lock", bucket=BUCKET, region=REGION, endpoint_url=local
+        ),
+    )
+    assert made[0]["endpoint_url"] == local
+    with pytest.raises(ValueError, match="endpoint_url must be https"):
+        S3ObjectLockSettings(
+            kind="s3_object_lock",
+            bucket=BUCKET,
+            region=REGION,
+            endpoint_url="http://" + "minio.example:9000",
+        )
 
 
 # --- test_audit_threads.py ---------------------------------------------------------------------------
@@ -429,8 +452,13 @@ def test_each_anchor_is_locked_dated_and_never_overwritten(key, bucket):
     assert anchor.all() == {
         2: tuple(log._db.run("SELECT hash, signature FROM audit_checkpoints")[0])
     }
-    with pytest.raises(ClientError, match="PreconditionFailed"):
+    head, signature = log._db.run("SELECT hash, signature FROM audit_checkpoints")[0]
+    anchor.put(
+        2, head, signature
+    )  # a retry whose first answer was lost: the 412 holds the same bytes
+    with pytest.raises(AnchorConflict):
         anchor.put(2, "forged", "forged")  # IfNoneMatch: an anchor is never replaced
+    assert anchor.all()[2] == (head, signature)
 
 
 def test_a_deleted_tail_is_detected_against_the_anchor(key, bucket):
@@ -496,62 +524,57 @@ def test_an_unsigned_chain_still_verifies_its_links():
     assert log.verify().ok and log.verify().unsigned_tail == 1
 
 
-def _backends(audit_entry, signer="none"):
+def _backends(anchor="none", signer="none", audit_entry=None):
     raw = {
         "signer": signer,
-        "audit": audit_entry,
+        "anchor": anchor,
+        "audit": audit_entry or {"kind": "chain"},
         "llm": {"kind": "fake", "recorded_dir": "r"},
     }
     return parse_backends(raw, Path("."))
 
 
 ANCHOR = {"kind": "s3_object_lock", "bucket": BUCKET, "region": REGION}
+ACKED = ANCHOR | {"retention_ack": True}
 KMS = {"kind": "aws_kms", "key_id": KEY_ALIAS, "region": REGION}
+KEY_FILE = {"kind": "ed25519_local", "private_key_path": "k.pem"}
+KEY_SECRET = {"kind": "ed25519_local", "private_key_secret_name": "audit-key"}
 
 
 @pytest.mark.parametrize(
-    "env,audit_entry,signer,refused",
+    "env,anchor,signer,refused",
     [
-        ("prod", {"kind": "chain", "anchor": ANCHOR | {"retention_ack": True}}, KMS, []),
-        (
-            "prod",
-            {"kind": "chain", "anchor": ANCHOR},
-            KMS,
-            ["without an anchor with retention_ack"],
-        ),
-        ("prod", {"kind": "chain"}, KMS, ["without an anchor with retention_ack"]),
-        (
-            "prod",
-            {"kind": "chain", "anchor": ANCHOR | {"retention_ack": True}},
-            {"kind": "ed25519_local", "private_key_path": "k.pem"},
-            ["signer: ed25519_local"],
-        ),
-        ("pilot", {"kind": "chain", "anchor": ANCHOR}, KMS, []),
-        ("pilot", {"kind": "chain"}, {"kind": "ed25519_local", "private_key_path": "k.pem"}, []),
-        (
-            "pilot",
-            {"kind": "chain", "anchor": ANCHOR | {"mode": "COMPLIANCE", "retention_ack": True}},
-            KMS,
-            ["COMPLIANCE outside prod"],
-        ),
-        (
-            "prod",
-            {"kind": "chain", "anchor": ANCHOR | {"mode": "COMPLIANCE", "retention_ack": True}},
-            KMS,
-            [],
-        ),
+        ("prod", ACKED, KMS, []),
+        ("prod", ANCHOR, KMS, ["anchor s3_object_lock without retention_ack"]),
+        ("prod", "none", KMS, ["anchor: none"]),
+        ("prod", ACKED, "none", ["signer: none"]),
+        ("prod", ACKED, KEY_FILE, ["ed25519_local with a key file"]),
+        ("prod", ACKED, KEY_SECRET, []),  # a key from the secrets kind, beside a WORM anchor
+        ("prod", "none", KEY_SECRET, ["anchor: none"]),
+        ("pilot", ANCHOR, KMS, []),
+        ("pilot", "none", KEY_FILE, []),
+        ("pilot", ACKED | {"mode": "COMPLIANCE"}, KMS, ["COMPLIANCE outside prod"]),
+        ("prod", ACKED | {"mode": "COMPLIANCE"}, KMS, []),
     ],
 )
-def test_the_environment_table_rules_for_signers_and_anchors(env, audit_entry, signer, refused):
-    found = _anchor_refusals(env, _backends(audit_entry, signer))
-    assert len(found) == len(refused)
-    assert all(want in got for want, got in zip(refused, found, strict=True))
+def test_the_environment_table_rules_for_signers_and_anchors(env, anchor, signer, refused):
+    found = _anchor_refusals(env, _backends(anchor, signer))
+    assert len(found) == len(refused), found
+    assert all(any(want in got for got in found) for want in refused), found
 
 
-def test_an_unknown_anchor_kind_or_mode_is_a_config_error():
+def test_an_anchor_needs_the_chain_audit():
+    local = {"kind": "local_dir", "dir": "a"}
+    found = _anchor_refusals("dev", _backends(ANCHOR, KMS, local))
+    assert found == ["anchor s3_object_lock needs backends.audit kind chain"]
+
+
+def test_an_unknown_anchor_kind_or_mode_or_two_key_sources_is_a_config_error():
     for bad in ({**ANCHOR, "kind": "gcs_bucket_lock"}, {**ANCHOR, "mode": "LEGAL_HOLD"}):
         with pytest.raises(ConfigError):
-            _backends({"kind": "chain", "anchor": bad})
+            _backends(bad)
+    with pytest.raises(ConfigError, match="exactly one"):
+        _backends(signer=KEY_FILE | KEY_SECRET)
 
 
 def test_the_app_builds_the_chain_audit_from_config(tmp_path):

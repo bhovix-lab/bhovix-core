@@ -33,7 +33,7 @@ from datetime import UTC
 from typing import Any
 
 from hadavin_sdk.audit.protocol import AuditUnavailable, DuplicateEvent
-from hadavin_sdk.audit.signer import Signer, verify_signature
+from hadavin_sdk.audit.signer import Alg, Signer, verify_signature
 from hadavin_sdk.errors import ConfigError
 from hadavin_sdk.models import AuditEvent
 
@@ -55,7 +55,9 @@ CREATE INDEX audit_entries_by_run ON audit_entries (run_id, seq);
     for t in ("audit_entries", "audit_checkpoints")
     for op in ("UPDATE", "DELETE")
 )
-_ALL_ROWS = "SELECT seq, at, run_id, kind, body, prev, hash FROM audit_entries ORDER BY seq"
+_ALL_ROWS = (
+    "SELECT seq, at, run_id, kind, body, prev, hash, event_id FROM audit_entries ORDER BY seq"
+)
 
 
 def _hash(prev: str, seq: int, at: str, run_id: str, kind: str, body: str) -> str:
@@ -321,7 +323,8 @@ class ChainAudit:
             return Verification(
                 problems=[f"the audit cannot be read ({type(exc).__name__})"], unreadable=True
             )
-        return verify_rows(rows, checkpoints, public, anchors)
+        alg = self.signer.alg if self.signer is not None else "ed25519"
+        return verify_rows(rows, checkpoints, public, anchors, alg)
 
 
 def verify_rows(
@@ -329,6 +332,7 @@ def verify_rows(
     checkpoints: list,
     public_key: bytes | None,
     anchors: dict[int, tuple[str, str]] | None = None,
+    alg: Alg = "ed25519",
 ) -> Verification:
     """Rows and checkpoints as read from the tables, in seq order. With `anchors`, every checkpoint must also
     match the copy written out of reach when it was made."""
@@ -338,7 +342,7 @@ def verify_rows(
         if checkpoints:
             result.problems.append("checkpoints exist but no signer is configured to check them")
     else:
-        _check_checkpoints(checkpoints, hashes, public_key, result)
+        _check_checkpoints(checkpoints, hashes, public_key, result, alg)
     if anchors is not None:
         _check_anchors(checkpoints, anchors, result.problems)
     return result
@@ -347,27 +351,43 @@ def verify_rows(
 def _check_chain(rows: list, problems: list[str]) -> dict[int, str]:
     hashes: dict[int, str] = {}
     prev = GENESIS
-    for expected, (seq, at, run_id, kind, body, stored_prev, stored_hash) in enumerate(rows, 1):
+    for expected, row in enumerate(rows, 1):
+        seq, at, run_id, kind, body, stored_prev, stored_hash, event_id = row
         if seq != expected:
             problems.append(f"row {expected} is missing (next row is {seq})")
         if stored_prev != prev:
             problems.append(f"row {seq} does not link to the row before it")
         if _hash(stored_prev, seq, at, run_id, kind, body) != stored_hash:
             problems.append(f"row {seq} was changed after it was written")
+        elif _body_event_id(body) != event_id:
+            # The event_id column is outside the hash (it is the dedupe index); the body inside it names
+            # the event, so a changed column (pointing verify_object or a dedupe elsewhere) is caught here.
+            problems.append(f"row {seq} event id column does not match its body")
         hashes[seq] = stored_hash
         prev = stored_hash
     return hashes
 
 
+def _body_event_id(body: str) -> str | None:
+    try:
+        return json.loads(body).get("event_id")
+    except (ValueError, AttributeError):
+        return None
+
+
 def _check_checkpoints(
-    checkpoints: list, hashes: dict[int, str], public_key: bytes, result: Verification
+    checkpoints: list,
+    hashes: dict[int, str],
+    public_key: bytes,
+    result: Verification,
+    alg: Alg = "ed25519",
 ) -> None:
     for seq, head, signature in checkpoints:
         try:
             raw = bytes.fromhex(signature)
         except ValueError:
             raw = b""
-        if not verify_signature(public_key, raw, _signed_message(seq, head)):
+        if not verify_signature(public_key, raw, _signed_message(seq, head), alg):
             result.problems.append(f"checkpoint {seq} has an invalid signature")
             continue
         if hashes.get(seq) != head:
@@ -411,14 +431,7 @@ def build(settings, deps) -> ChainAudit:
             ) from None
     else:
         raise ConfigError("audit chain: needs store memory or postgres")
-    anchor = None
-    if settings.anchor is not None:
-        if deps.signer is None:
-            raise ConfigError("audit chain: an anchor needs a signer (backends.signer)")
-        from hadavin_sdk.audit import anchor_s3
-
-        try:
-            anchor = anchor_s3.build(settings.anchor)
-        except ModuleNotFoundError as exc:
-            raise ConfigError("audit chain anchor needs: pip install hadavin-sdk[aws]") from exc
-    return ChainAudit(db, deps.signer, anchor, settings.checkpoint_every)
+    if deps.anchor is not None and deps.signer is None:
+        raise ConfigError("audit chain: an anchor needs a signer (backends.signer)")
+    # The anchor is its own capability (backends.anchor), built before the audit and handed in through Deps.
+    return ChainAudit(db, deps.signer, deps.anchor, settings.checkpoint_every)

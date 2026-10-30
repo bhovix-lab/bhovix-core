@@ -83,10 +83,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         secrets = make("secrets", b.secrets)
         # Same start-up probe as app.build: a missing DSN is a clean ConfigError, not a KeyError mid-build.
-        platform_secrets.check(secrets, [b.signer, b.store, b.audit], set())
+        platform_secrets.check(secrets, [b.signer, b.anchor, b.store, b.audit], set())
         signer = make("signer", b.signer, secrets)
+        anchor = make("anchor", b.anchor, secrets)
         store = make("store", b.store, secrets)
-        audit = make("audit", b.audit, secrets, store=store, signer=signer)
+        audit = make("audit", b.audit, secrets, store=store, signer=signer, anchor=anchor)
     except ConfigError as exc:
         if args.cmd != "audit":
             raise

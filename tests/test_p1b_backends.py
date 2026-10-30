@@ -89,7 +89,7 @@ def test_an_empty_detector_list_refused(cfg_dir):
 @pytest.mark.parametrize("env", ["pilot", "prod"])
 def test_dev_only_kinds_refused_outside_dev(cfg_dir, env):
     _edit(cfg_dir, lambda d: d.update(environment=env))
-    with pytest.raises(ConfigError, match=f"environment {env}: refused outside dev") as err:
+    with pytest.raises(ConfigError, match=f"environment {env}: refused: ") as err:
         load_config(cfg_dir)
     for item in (
         "llm: fake",
