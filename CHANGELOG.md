@@ -24,10 +24,11 @@
   `output_schema` is a forced tool call. Model ids that are moving aliases (`sonnet`, `*-latest`) are refused.
   The llm `platform` and `base_url` are part of `config_hash`.
 
-- Detector lists (slice 2 P6): `backends.detector` takes any number of entries; every entry runs and any flag
-  flags the run (max score, the flagging names joined by `+`, the first flag's reason). New kinds, both
-  `slice2-unverified`: `llm_judge` (`route`, `threshold` 0.7; a fixed prompt hashed into `config_hash`, its
-  cost charged to the agent, qualified by `golden_dir/judge.jsonl` in the evals gate) and `bedrock_guardrail`
+- Detector lists (slice 2 P6): `backends.detector` takes one or more entries (an `llm_judge` never alone); every
+  entry runs and any flag flags the run (max score, the flagging names joined by `+`, the first flag's reason).
+  New kinds, both `slice2-unverified`: `llm_judge` (`route`, `threshold` 0.7; a fixed prompt hashed into
+  `config_hash`, its cost charged to the agent, qualified at its own rate by a non-empty `golden_dir/judge.jsonl`
+  in the evals gate; that file is part of `golden_sha256`) and `bedrock_guardrail`
   (`guardrail_id`, `guardrail_version`, `region`; the PROMPT_ATTACK filter, extra `aws`).
 
 ### Changed

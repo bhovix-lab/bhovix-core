@@ -131,6 +131,32 @@ def test_an_off_schema_judge_answer_is_a_flag(answer):
     assert (v.flagged, v.reason_code) == (True, "guard_unavailable")
 
 
+@pytest.mark.parametrize(
+    "reply",
+    [
+        Reply(text="not json", cost_usd=JUDGE_COST, model_id="m"),
+        Reply(text='{"injection": true, "confidence": "0.9"}', cost_usd=JUDGE_COST, model_id="m"),
+        Reply(
+            tool_calls=[ToolCall(name="other", input={"injection": False, "confidence": 1})],
+            cost_usd=JUDGE_COST,
+            model_id="m",
+        ),
+    ],
+)
+def test_an_off_schema_answer_is_still_charged(reply):
+    class Steered:
+        def chat(self, *a, **k):
+            return reply
+
+    v = JudgeDetector(Steered(), "screen", 0.7).check(INJECTION, "document")
+    assert (v.flagged, v.reason_code, v.cost_usd) == (True, "guard_unavailable", JUDGE_COST)
+
+
+def test_a_failed_members_flag_names_it():
+    v = AnyOf([RegexDetector(0.5), _Fixed("llm_judge", False, 0.0, boom=True)]).check(CLEAN, "d")
+    assert (v.backend, v.reason_code) == ("llm_judge", "guard_unavailable")
+
+
 def test_a_confident_clean_answer_scores_zero():
     class Clean:
         def chat(self, *a, **k):
@@ -195,10 +221,58 @@ def test_the_evals_gate_qualifies_the_judge_on_its_golden_set(cfg_dir, wrong):
     (cfg.golden_dir / "judge.jsonl").write_text(
         "".join(json.dumps(c) + "\n" for c in cases), encoding="utf-8"
     )
-    run = evals.gate(load_registry(cfg), _Routed(cfg, JudgeModel()), "test-agent")
+    reg = load_registry(cfg)
+    run = evals.gate(reg, _Routed(cfg, JudgeModel()), "test-agent")
     agent_cases = len((cfg.golden_dir / "test-agent.jsonl").read_text().splitlines())
-    assert run.n == agent_cases + 2
-    assert run.green is not wrong
+    assert run.n == agent_cases and run.passed == agent_cases  # the agent's own rate
+    assert run.green is not wrong  # the judge's set decides on its own
+    assert run.golden_sha256 == reg.golden_sha256("test-agent")
+
+
+def test_a_judge_needs_a_non_empty_golden_set(cfg_dir):
+    _edit(cfg_dir, _with_judge)
+    cfg = load_config(cfg_dir)
+    with pytest.raises(ConfigError, match="judge.jsonl"):
+        evals.gate(load_registry(cfg), _Routed(cfg, JudgeModel()), "test-agent")
+    (cfg.golden_dir / "judge.jsonl").write_text("", encoding="utf-8")
+    assert not evals.gate(load_registry(cfg), _Routed(cfg, JudgeModel()), "test-agent").green
+
+
+def test_a_changed_judge_set_un_qualifies(cfg_dir):
+    _edit(cfg_dir, _with_judge)
+    cfg = load_config(cfg_dir)
+    path = cfg.golden_dir / "judge.jsonl"
+    path.write_text(json.dumps({"text": INJECTION, "injection": True}) + "\n", encoding="utf-8")
+    before = load_registry(cfg).golden_sha256("test-agent")
+    path.write_text(json.dumps({"text": CLEAN, "injection": False}) + "\n", encoding="utf-8")
+    assert load_registry(cfg).golden_sha256("test-agent") != before
+
+
+def test_a_judge_alone_is_refused(cfg_dir):
+    def only_judge(d):
+        _with_judge(d)
+        d["backends"]["detector"] = [{"kind": "llm_judge", "route": "screen"}]
+
+    _edit(cfg_dir, only_judge)
+    with pytest.raises(ConfigError, match="another detector"):
+        load_config(cfg_dir)
+
+
+def test_the_judge_never_runs_once_limits_stop_the_agent(cfg_dir):
+    rt, cfg = build(cfg_dir)
+    model = JudgeModel()
+    rt.detector = AnyOf([RegexDetector(0.5), judge(model)])
+    rt.limits.stop("user:ops")
+    run = rt.handle("test-agent", "svc:test-agent", (cfg.inputs_dir / "create.txt").read_bytes())
+    assert (run.state, model.calls) == (RunState.STOPPED, [])
+
+
+def test_the_approval_summary_screen_runs_no_judge(cfg_dir):
+    _edit(cfg_dir, _with_judge)
+    qualify(load_registry(load_config(cfg_dir)))
+    app = build_app(cfg_dir, ["test-agent"], secrets=FakeSecretProvider({"fixture-token": "t"}))
+    # No agent to charge there: the unmetered members only (the judge screens document and tool output).
+    assert app.approvals.detector.backend == "regex"
 
 
 # --- bedrock_guardrail --------------------------------------------------------------------------
@@ -237,6 +311,33 @@ def test_another_policy_intervening_is_not_an_injection():
 def test_empty_text_is_not_sent():
     client = GuardrailClient()
     assert not guardrail(client).check("  ", "document").flagged and client.requests == []
+
+
+def _clean_body(**changes):
+    from tests.fixtures.http_fake import fixture
+
+    body = fixture("bedrock_guardrail", "clean")["body"]
+    body.update(changes)
+    return {k: v for k, v in body.items() if v is not None}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        _clean_body(assessments=None),
+        _clean_body(action="SOMETHING_NEW"),
+        _clean_body(guardrailCoverage={"textCharacters": {"guarded": 10, "total": 50}}),
+    ],
+)
+def test_an_odd_or_partial_guardrail_answer_is_a_flag(body):
+    class Odd:
+        def apply_guardrail(self, **params):
+            return body
+
+    from hadavin_sdk.guard.bedrock_guardrail import GuardrailDetector
+
+    v = injection_check(GuardrailDetector(Odd(), "g", "1", 0.5), CLEAN, "document")
+    assert (v.flagged, v.reason_code, v.backend) == (True, "guard_unavailable", "bedrock_guardrail")
 
 
 def test_the_guardrail_client_is_pinned_to_its_region(monkeypatch, tmp_path):

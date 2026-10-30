@@ -67,7 +67,13 @@ class Registry:
 
     def golden_sha256(self, agent_id: str) -> str:
         path = self.golden_path(agent_id)
-        return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else ""
+        if not path.is_file():
+            return ""
+        data = path.read_bytes()
+        judge = self.config.golden_dir / "judge.jsonl"
+        if any(d.kind == "llm_judge" for d in self.config.backends.detector) and judge.is_file():
+            data += b"\0" + judge.read_bytes()  # a weakened judge set un-qualifies too
+        return hashlib.sha256(data).hexdigest()
 
     def config_hash(self, agent_id: str) -> str:
         """What the agent was qualified on. `exclude_defaults`: from this version on, adding an optional field

@@ -94,4 +94,7 @@ def injection_check(detector: Detector, text: str, source: str) -> Verdict:
             type(exc).__name__,
             str(exc)[:300],
         )
-        return Verdict(flagged=True, score=1.0, backend="error", reason_code="guard_unavailable")
+        # Named after the detector that failed, so a list's verdict says which one.
+        name = getattr(detector, "backend", None)
+        name = name if isinstance(name, str) and name else "error"
+        return Verdict(flagged=True, score=1.0, backend=name, reason_code="guard_unavailable")

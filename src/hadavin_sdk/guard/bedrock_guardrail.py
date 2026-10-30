@@ -2,7 +2,11 @@
 
 ``ApplyGuardrail`` with ``source=INPUT`` on the text alone (no model call). The score is 1.0 when the guardrail's
 PROMPT_ATTACK filter blocked or detected the text, else 0.0; its other policies (topics, words, PII) are not an
-injection signal here. Any API error raises, which ``injection_check`` turns into a flag (fail closed).
+injection signal here. Any API error, an answer that is not one of the documented shapes, or text the guardrail
+only partly screened raises, which ``injection_check`` turns into a flag (fail closed).
+
+Known limit: a guardrail whose PROMPT_ATTACK input filter is missing or set to NONE never flags. Its
+configuration is the client's (S11 checklist); the P9 live run screens the seeded injection once.
 """
 
 from __future__ import annotations
@@ -14,14 +18,17 @@ from botocore.config import Config
 
 from hadavin_sdk.models import Verdict
 
+_ACTIONS = frozenset({"NONE", "GUARDRAIL_INTERVENED"})
+
 
 def make(settings: Any, deps: Any) -> GuardrailDetector:
     client = boto3.client(
         "bedrock-runtime",
         region_name=settings.region,
-        # total_max_attempts counts the first request: one retry for a blip, then the run is flagged.
         config=Config(
+            connect_timeout=5,
             read_timeout=10,
+            # total_max_attempts counts the first request: one retry for a blip, then the run is flagged.
             retries={"total_max_attempts": 2, "mode": "standard"},
             # AWS_ENDPOINT_URL(_BEDROCK_RUNTIME) would send the screened text to another host.
             ignore_configured_endpoint_urls=True,
@@ -33,7 +40,12 @@ def make(settings: Any, deps: Any) -> GuardrailDetector:
 
 
 def _prompt_attack(resp: dict[str, Any]) -> bool:
-    for assessment in resp.get("assessments") or []:
+    if resp.get("action") not in _ACTIONS or not isinstance(resp.get("assessments"), list):
+        raise ValueError("guardrail answer not in the documented shape")
+    chars = (resp.get("guardrailCoverage") or {}).get("textCharacters") or {}
+    if chars and chars.get("guarded", 0) < chars.get("total", 0):
+        raise ValueError("guardrail screened only part of the text")
+    for assessment in resp["assessments"]:
         for f in (assessment.get("contentPolicy") or {}).get("filters") or []:
             if f.get("type") == "PROMPT_ATTACK" and (
                 f.get("detected") or f.get("action") == "BLOCKED"

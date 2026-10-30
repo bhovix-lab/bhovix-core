@@ -119,6 +119,10 @@ def parse_backends(raw: Any, root: Path) -> Backends:
             if not items:  # every entry runs and any flag flags the run (guard.injection.AnyOf)
                 raise ConfigError("backends.detector: list at least one detector")
             built[cap] = tuple(_one(cap, item, root) for item in items)
+            if all(d.kind == "llm_judge" for d in built[cap]):
+                # The judge reads attacker text and can be steered to say "clean": a tripwire beside
+                # another detector, never the only one (design 4.3, 10).
+                raise ConfigError("backends.detector: llm_judge needs another detector beside it")
         else:
             built[cap] = _one(cap, value, root)
     return Backends(**built)

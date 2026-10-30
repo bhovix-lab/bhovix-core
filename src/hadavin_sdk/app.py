@@ -58,7 +58,13 @@ def build(
     store = make("store", b.store, secrets)
     audit = make("audit", b.audit, secrets, store=store)
     llm = make("llm", b.llm, secrets, routes=cfg.routes)
-    detector = detector or combine([make("detector", d, secrets, llm=llm) for d in b.detector])
+    summary_detector = detector
+    if detector is None:
+        members = [make("detector", d, secrets, llm=llm) for d in b.detector]
+        detector = combine(members)
+        # The approval summary screen has no agent to charge, so it runs the unmetered members only; the judge
+        # screens the document and tool output, where untrusted text enters (config refuses a judge alone).
+        summary_detector = combine([m for m in members if m.backend != "llm_judge"])
     channel = channel or make("channel", b.channel, secrets, store=store)
     limits = Limits(store, audit, reg)
     executor = Executor(reg, secrets, timeout_s=timeout_s)
@@ -70,7 +76,7 @@ def build(
         channel,
         lambda run_id, status, d: holder["rt"].on_decided(run_id, status, d),
         clock,
-        detector,
+        summary_detector,
     )
     hooks = Hooks(
         request_approval=approvals.request,

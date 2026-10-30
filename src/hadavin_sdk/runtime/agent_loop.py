@@ -140,6 +140,14 @@ class Runtime:
     def _note(self, run: Run, domain: str, operation: str, **kw: Any) -> None:
         self.audit.write_outcome(self._event(run, domain, operation, **kw))
 
+    def _limits_stop(self, run: Run) -> Run | None:
+        blocked = self.limits.blocked(run.agent_id)
+        if "kill_switch" in blocked:
+            return self._to(run, S.STOPPED, "kill_switch")
+        if blocked:
+            return self._to(run, S.NEEDS_PERSON, f"limits.{blocked[0]}")
+        return None
+
     def _screen(self, run: Run, text: str, source: str):
         """The injection check; a model-backed detector's call (llm_judge) is charged like any model call."""
         verdict = injection_check(self.detector, text, source)
@@ -176,6 +184,9 @@ class Runtime:
         self._note(run, "run", "received", inputs_hash=sha256_hex(document.hex()))
         run = self._to(run, S.WORKING)
 
+        # Limits first: a paid screen (llm_judge) never runs once the kill switch or a budget stopped the agent.
+        if (stopped := self._limits_stop(run)) is not None:
+            return stopped
         verdict = self._screen(run, document.decode("utf-8", "replace"), "document")
         if verdict.flagged:
             self._note(run, "guard", "injection", result="flagged", error_code=verdict.reason_code)
@@ -190,11 +201,8 @@ class Runtime:
         system = self.registry.prompt(agent_id)
 
         for _step in range(agent.max_steps):
-            blocked = self.limits.blocked(agent_id)
-            if "kill_switch" in blocked:
-                return self._to(run, S.STOPPED, "kill_switch")
-            if blocked:
-                return self._to(run, S.NEEDS_PERSON, f"limits.{blocked[0]}")
+            if (stopped := self._limits_stop(run)) is not None:
+                return stopped
             self.store.touch(run.run_id)  # heartbeat for tick's stuck-run rule
             try:
                 reply = self.llm.chat(
