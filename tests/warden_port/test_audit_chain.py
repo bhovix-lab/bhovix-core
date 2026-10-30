@@ -232,8 +232,29 @@ def test_audit_verify_refuses_a_memory_store(tmp_path, capsys, monkeypatch):
     monkeypatch.setenv(
         "HADAVIN_CONFIG_DIR", str(tmp_path)
     )  # main() sets it; restored after the test
-    assert cli.main(["--config", str(make_cfg(tmp_path)), "audit", "verify"]) == 2
+    cfg_dir = make_cfg(tmp_path)
+    assert cli.main(["--config", str(cfg_dir), "audit", "verify"]) == 2  # local_dir: not a chain
     assert "refused" in capsys.readouterr().err
+    path = cfg_dir / "config.yaml"
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    raw["backends"]["audit"] = {"kind": "chain"}
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    assert cli.main(["--config", str(cfg_dir), "audit", "verify"]) == 2  # chain, but a memory store
+    assert "audit verify needs a shared store" in capsys.readouterr().err
+
+
+def test_audit_verify_that_cannot_build_its_store_could_not_verify(tmp_path, capsys, monkeypatch):
+    """An unreachable, un-migrated or unreadable store is exit 3 ("could not verify"), never 1 (tampered)."""
+    monkeypatch.setenv("HADAVIN_CONFIG_DIR", str(tmp_path))
+    cfg_dir = make_cfg(tmp_path)
+    path = cfg_dir / "config.yaml"
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    raw["backends"]["audit"] = {"kind": "chain"}
+    raw["backends"]["store"] = {"kind": "postgres", "dsn_secret_name": "pg-dsn"}
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    # The configured `fake` secrets are empty: the DSN cannot be read at the start-up probe.
+    assert cli.main(["--config", str(cfg_dir), "audit", "verify"]) == 3
+    assert "could not verify: secret 'pg-dsn' cannot be read" in capsys.readouterr().err
 
 
 # --- test_audit_anchor_s12.py ------------------------------------------------------------------------

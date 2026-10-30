@@ -20,6 +20,7 @@ from hadavin_sdk import evals
 from hadavin_sdk.audit import AuditUnavailable
 from hadavin_sdk.backends import make, platform_secrets
 from hadavin_sdk.config import load_config
+from hadavin_sdk.errors import ConfigError
 from hadavin_sdk.limits import Limits
 from hadavin_sdk.registry import load_registry
 
@@ -66,18 +67,26 @@ def main(argv: list[str] | None = None) -> int:
     if b.store.kind == "memory":
         # The memory store lives inside one running process; a separate CLI process cannot reach it, so
         # claiming "stopped" here would be a lie. Use App.limits.stop() in-process until Postgres arrives.
+        what = "audit verify" if args.cmd == "audit" else "the kill switch"
         print(
-            "refused: the kill switch needs a shared store (Postgres). With the memory store, "
-            "call app.limits.stop(by=...) inside the running process.",
+            f"refused: {what} needs a shared store (Postgres). With the memory store, "
+            "use the running process's app (app.limits, app.audit).",
             file=sys.stderr,
         )
         return 2
-    secrets = make("secrets", b.secrets)
-    # Same start-up probe as app.build: a missing DSN is a clean ConfigError, not a KeyError mid-build.
-    platform_secrets.check(secrets, [b.signer, b.store, b.audit], set())
-    signer = make("signer", b.signer, secrets)
-    store = make("store", b.store, secrets)
-    audit = make("audit", b.audit, secrets, store=store, signer=signer)
+    try:
+        secrets = make("secrets", b.secrets)
+        # Same start-up probe as app.build: a missing DSN is a clean ConfigError, not a KeyError mid-build.
+        platform_secrets.check(secrets, [b.signer, b.store, b.audit], set())
+        signer = make("signer", b.signer, secrets)
+        store = make("store", b.store, secrets)
+        audit = make("audit", b.audit, secrets, store=store, signer=signer)
+    except ConfigError as exc:
+        if args.cmd != "audit":
+            raise
+        # An unreachable or un-migrated store is not evidence of tampering: never exit 1 for it.
+        print(f"could not verify: {exc}", file=sys.stderr)
+        return 3
     if args.cmd == "audit":
         return audit_verify(audit)
     return kill_switch(Limits(store, audit, reg), args.action, args.by)
