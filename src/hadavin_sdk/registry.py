@@ -69,14 +69,23 @@ class Registry:
         return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else ""
 
     def config_hash(self, agent_id: str) -> str:
+        """What the agent was qualified on. `exclude_defaults`: from this version on, adding an optional field
+        with a default never un-qualifies existing agents. The llm backend kind is included, so a backend swap
+        with the same model id needs a new gate run.
+
+        Upgrade note (slice 2 P1a): this version changes the hash itself, so every agent needs ONE new gate run
+        (`hadavin-sdk gate <agent>`) before the runtime starts it again; see CHANGELOG.md."""
         agent = self.agents[agent_id]
+
+        def dump(model) -> dict:
+            return model.model_dump(mode="json", exclude_defaults=True)
+
         return sha256_hex(
             {
-                "agent": agent.model_dump(mode="json"),
-                "route": self.config.routes[agent.model_route].model_dump(mode="json"),
-                "actions": [
-                    self.contracts[a].model_dump(mode="json") for a in sorted(agent.scope_allowed)
-                ],
+                "agent": dump(agent),
+                "route": dump(self.config.routes[agent.model_route]),
+                "actions": [dump(self.contracts[a]) for a in sorted(agent.scope_allowed)],
+                "llm_backend": self.config.backends.llm,
             }
         )
 

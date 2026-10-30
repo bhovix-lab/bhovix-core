@@ -6,6 +6,7 @@ by the app wiring (``hadavin_sdk.app``). Approvals are injected the same way.
 
 from __future__ import annotations
 
+import inspect
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -17,7 +18,7 @@ from hadavin_sdk.config import ConfigError, confined
 from hadavin_sdk.guard.injection import Detector, injection_check
 from hadavin_sdk.identity import Principal
 from hadavin_sdk.limits import Limits
-from hadavin_sdk.llm.protocol import LLM
+from hadavin_sdk.llm.protocol import LLM, ProviderExhausted
 from hadavin_sdk.models import (
     AuditEvent,
     GateDecision,
@@ -36,6 +37,15 @@ from hadavin_sdk.store.protocol import Store
 
 S = RunState
 _ASK = "Process the attached request document."
+
+
+def _accepts(fn: Callable[..., Any], name: str) -> bool:
+    """True if `fn` takes a keyword `name` (or **kwargs). Unknown signatures (some builtins) count as no."""
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(p.name == name or p.kind is inspect.Parameter.VAR_KEYWORD for p in params)
 
 
 class Unqualified(RuntimeError):
@@ -177,13 +187,18 @@ class Runtime:
                 return self._to(run, S.STOPPED, "kill_switch")
             if blocked:
                 return self._to(run, S.NEEDS_PERSON, f"limits.{blocked[0]}")
-            reply = self.llm.chat(
-                messages,
-                system=system,
-                route=agent.model_route,
-                tools=tools,
-                documents=[document],
-            )
+            self.store.touch(run.run_id)  # heartbeat for tick's stuck-run rule
+            try:
+                reply = self.llm.chat(
+                    messages,
+                    system=system,
+                    route=agent.model_route,
+                    tools=tools,
+                    documents=[document],
+                )
+            except ProviderExhausted:
+                self._note(run, "llm", "chat", result="exhausted", error_code="provider_exhausted")
+                return self._to(run, S.NEEDS_PERSON, "provider_exhausted")
             self.limits.charge(agent_id, reply.cost_usd)
             self.store.add_cost(run.run_id, reply.cost_usd)
             if not reply.tool_calls:
@@ -305,7 +320,10 @@ class Runtime:
             return self._to(run, S.NEEDS_PERSON, "audit_unavailable")
         run = self._to(run, S.EXECUTING)
         try:
-            result = self.hooks.execute(plan, decision, approval)
+            extra = {}
+            if _accepts(self.hooks.execute, "heartbeat"):  # older three-argument hooks still work
+                extra["heartbeat"] = lambda: self.store.touch(run.run_id)
+            result = self.hooks.execute(plan, decision, approval, **extra)
         except Exception:  # noqa: BLE001 - the side effect may have happened: never leave EXECUTING
             result = RunResult(outcome="unknown", error_code="executor_error")
         self._note(

@@ -10,6 +10,7 @@ from decimal import Decimal
 from hadavin_sdk.models import (
     ApprovalDecision,
     ApprovalRequest,
+    ApprovalStatus,
     DeadLetter,
     GateDecision,
     KillSwitch,
@@ -68,8 +69,32 @@ class MemoryStore:
 
     def add_cost(self, run_id: str, usd: Decimal) -> None:
         with self._lock:
-            run = self._runs[run_id]
+            run = self._runs.get(run_id)
+            if run is None:
+                raise NotFound(run_id)
             self._runs[run_id] = run.model_copy(update={"cost_usd": run.cost_usd + usd})
+
+    def touch(self, run_id: str) -> None:
+        """Heartbeat only: moves `updated_at`, never checks or changes the state (`transition` is the only
+        compare-and-set)."""
+        with self._lock:
+            run = self._runs.get(run_id)
+            if run is None:
+                raise NotFound(run_id)
+            self._runs[run_id] = run.model_copy(update={"updated_at": now()})
+
+    def list_runs(self, state: RunState, updated_before: datetime, limit: int = 100) -> list[Run]:
+        """Oldest first, at most `limit`."""
+        with self._lock:
+            found = sorted(
+                (
+                    r
+                    for r in self._runs.values()
+                    if r.state == state and r.updated_at < updated_before
+                ),
+                key=lambda r: r.updated_at,
+            )
+            return [r.model_copy(deep=True) for r in found[:limit]]
 
     def save_plan(self, plan: Plan) -> None:
         with self._lock:
@@ -118,6 +143,19 @@ class MemoryStore:
         with self._lock:
             self._decisions.append(decision.model_copy(deep=True))
 
+    def get_approval_decision(self, approval_id: str) -> ApprovalDecision | None:
+        with self._lock:
+            for d in reversed(self._decisions):
+                if d.approval_id == approval_id:
+                    return d.model_copy(deep=True)
+            return None
+
+    def list_approvals(self, statuses: set[ApprovalStatus]) -> list[ApprovalRequest]:
+        with self._lock:
+            return [
+                r.model_copy(deep=True) for r in self._approvals.values() if r.status in statuses
+            ]
+
     def add_dead_letter(self, dl: DeadLetter) -> None:
         with self._lock:
             self._dead[dl.run_id].append(dl.model_copy(deep=True))
@@ -135,6 +173,18 @@ class MemoryStore:
                 if a == agent_id and (d.year, d.month) == (day.year, day.month)
             )
             return self._spend[(agent_id, day)], Decimal(month)
+
+    def spend_totals(self, agent_id: str, day: date) -> tuple[Decimal, Decimal]:
+        with self._lock:
+            month = sum(
+                (
+                    v
+                    for (a, d), v in self._spend.items()
+                    if a == agent_id and (d.year, d.month) == (day.year, day.month)
+                ),
+                Decimal(0),
+            )
+            return self._spend.get((agent_id, day), Decimal(0)), month
 
     def get_kill_switch(self) -> KillSwitch:
         with self._lock:
