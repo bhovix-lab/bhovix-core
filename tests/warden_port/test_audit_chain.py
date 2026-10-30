@@ -12,7 +12,6 @@ cases (P2's `store.migrate` owns roles and grants).
 from __future__ import annotations
 
 import logging
-import os
 import sqlite3
 import threading
 import uuid
@@ -52,6 +51,7 @@ from hadavin_sdk.models import AuditEvent
 from hadavin_sdk.registry import load_registry
 from tests.conftest import make_cfg, qualify
 from tests.contracts.kinds.audit_chain import KEY_ALIAS, REGION, kms_stub
+from tests.contracts.kinds.store_postgres import pg_schema
 
 BUCKET = "anchors-" + "contract"
 
@@ -547,31 +547,19 @@ def test_the_app_builds_the_chain_audit_from_config(tmp_path):
     assert isinstance(app.audit, audit.ChainAudit) and app.audit.signer is None
 
 
-# --- PostgreSQL (test_audit_pg_g6.py, against a real database) ----------------------------------------
-
-MIGRATION = Path(audit.__file__).parents[1] / "store" / "migrations" / "0002_audit_chain.sql"
+# --- PostgreSQL (test_audit_pg_g6.py, against a real database; schema from `hadavin-sdk migrate`) ---------
 
 
 @pytest.fixture
 def pg_chain(key):
-    dsn = os.environ.get("HADAVIN_TEST_PG_DSN")
-    if not dsn:
-        pytest.skip("HADAVIN_TEST_PG_DSN not set (the postgres service runs in CI)")
-    psycopg = pytest.importorskip("psycopg")
-    from psycopg import sql
-    from psycopg.conninfo import make_conninfo
+    import psycopg
 
-    schema = f"t_{uuid.uuid4().hex[:12]}"
-    with psycopg.connect(dsn, autocommit=True) as db:
-        db.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
-    conn = psycopg.connect(make_conninfo(dsn, options=f"-c search_path={schema}"), autocommit=True)
-    conn.execute(MIGRATION.read_text(encoding="utf-8"))
-    try:
-        yield audit.ChainAudit(audit._Db(conn, threading.Lock(), pg=True), key, None, 3), conn
-    finally:
-        conn.close()
-        with psycopg.connect(dsn, autocommit=True) as db:
-            db.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema)))
+    for dsn in pg_schema():
+        conn = psycopg.connect(dsn, autocommit=True)
+        try:
+            yield audit.ChainAudit(audit._Db(conn, threading.Lock(), pg=True), key, None, 3), conn
+        finally:
+            conn.close()
 
 
 def test_postgres_chain_appends_verifies_and_refuses_update_delete_truncate(pg_chain):
@@ -606,3 +594,54 @@ def test_postgres_appends_from_many_threads_keep_one_whole_chain(pg_chain):
         list(pool.map(work, range(4)))
     v = log.verify()
     assert v.ok and v.rows == 40, v.problems
+
+
+def test_the_runtime_role_writes_and_reads_the_chain_but_cannot_rewrite_it(key):
+    """As in production: `migrate` (migration role) grants the runtime role, which then builds the store and
+    the chain through the table and appends, checkpoints, drains the outbox and verifies, but cannot UPDATE or
+    DELETE a chain row even before the append-only trigger runs."""
+    import psycopg
+    from psycopg import sql
+    from psycopg.conninfo import conninfo_to_dict, make_conninfo
+
+    from hadavin_sdk.backends.table import PostgresSettings
+    from hadavin_sdk.store.migrate import migrate
+
+    for dsn in pg_schema(migrated=False):
+        role = "rt_" + uuid.uuid4().hex[:10]
+        with psycopg.connect(dsn, autocommit=True) as db:
+            db.execute(sql.SQL("CREATE ROLE {} LOGIN").format(sql.Identifier(role)))
+        try:
+            migrate(dsn, runtime_role=role)
+            options = conninfo_to_dict(dsn).get("options")
+            runtime_dsn = make_conninfo(dsn, user=role, options=options)
+            settings = PostgresSettings(kind="postgres", dsn_secret_name="pg-dsn")  # noqa: S106 - a name
+            store = make("store", settings, FakeSecretProvider({"pg-dsn": runtime_dsn}))
+            try:
+                assert store._db.execute("SELECT current_user").fetchone()[0] == role
+                chain = ChainSettings(kind="chain", checkpoint_every=2)
+                log = make("audit", chain, store=store, signer=key)
+                first = _event(i=0)
+                log.write_intent(first)
+                log.write_intent(_event(i=1))  # inline checkpoint at row 2
+                assert log.signed_through() == 2
+                queued = _event(i=2)
+                log._db.run(
+                    "INSERT INTO audit_outbox (event_id, body) VALUES (?, ?)",
+                    (queued.event_id, queued.model_dump_json()),
+                )
+                assert log.reconcile() == 1  # SELECT + DELETE on the outbox
+                assert log.events()[0].event_id == first.event_id
+                assert log.verify().ok
+                for statement in (
+                    "UPDATE audit_entries SET body = '{}'",
+                    "DELETE FROM audit_entries",
+                ):
+                    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                        store._db.execute(statement)
+            finally:
+                store._db.close()
+        finally:
+            with psycopg.connect(dsn, autocommit=True) as db:
+                db.execute(sql.SQL("DROP OWNED BY {}").format(sql.Identifier(role)))
+                db.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))

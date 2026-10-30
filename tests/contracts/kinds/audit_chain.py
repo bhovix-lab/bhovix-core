@@ -122,3 +122,17 @@ def chain(tmp_path):
     store = make("store", KindSettings(kind="memory"))
     signer = make("signer", local_signer_settings(tmp_path))
     return make("audit", ChainSettings(kind="chain"), store=store, signer=signer)
+
+
+@kind("audit", "chain_postgres")
+def chain_postgres(tmp_path):
+    """The chain in the postgres store's database (HADAVIN_TEST_PG_DSN; the CI postgres service)."""
+    from hadavin_sdk.backends.table import PostgresSettings
+    from tests.contracts.kinds.store_postgres import pg_schema
+
+    for dsn in pg_schema():
+        settings = PostgresSettings(kind="postgres", dsn_secret_name="pg-dsn")  # noqa: S106 - a name
+        store = make("store", settings, FakeSecretProvider({"pg-dsn": dsn}))
+        signer = make("signer", local_signer_settings(tmp_path))
+        yield make("audit", ChainSettings(kind="chain"), store=store, signer=signer)
+        store._db.close()

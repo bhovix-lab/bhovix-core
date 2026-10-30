@@ -1,7 +1,8 @@
 """Store suite: the public Store Protocol only, over every registered store kind (P2 adds postgres)."""
 
+import threading
 import time
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -149,6 +150,17 @@ def test_spend_day_and_month_totals(store):
     assert store.spend_totals("a", today) == (Decimal("0.50"), Decimal("0.50"))
 
 
+def test_month_total_spans_days_and_money_is_exact(store):
+    d1, d2 = date(2026, 3, 10), date(2026, 3, 11)
+    store.add_spend("m", d1, Decimal("0.00108225"))
+    day, month = store.add_spend("m", d2, Decimal("0.5"))
+    assert (day, month) == (Decimal("0.5"), Decimal("0.50108225"))
+    assert store.spend_totals("m", d1) == (Decimal("0.00108225"), Decimal("0.50108225"))
+    run = _run(store)
+    store.add_cost(run.run_id, Decimal("0.00108225"))
+    assert store.get_run(run.run_id).cost_usd == Decimal("0.00108225")
+
+
 def test_dead_letters_and_kill_switch(store):
     store.add_dead_letter(DeadLetter(run_id="run-x", reason="r", errors=["e"]))
     assert [d.reason for d in store.list_dead_letters("run-x")] == ["r"]
@@ -156,3 +168,24 @@ def test_dead_letters_and_kill_switch(store):
     assert store.get_kill_switch().on is False
     store.set_kill_switch(KillSwitch(on=True, by="user:a"))
     assert (store.get_kill_switch().on, store.get_kill_switch().by) == (True, "user:a")
+
+
+def test_two_threads_racing_one_cas_exactly_one_wins(store):
+    run = _run(store)
+    results = []
+    gate = threading.Barrier(2)
+
+    def race():
+        gate.wait()
+        try:
+            store.transition(run.run_id, S.RECEIVED, S.WORKING)
+            results.append("won")
+        except StaleState:
+            results.append("stale")
+
+    threads = [threading.Thread(target=race) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(results) == ["stale", "won"]

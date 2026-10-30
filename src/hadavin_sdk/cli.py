@@ -1,7 +1,9 @@
 """hadavin-sdk CLI.
 
   hadavin-sdk [--config DIR] gate <agent>                exit 0 when green, 1 when below the threshold
-  hadavin-sdk [--config DIR] limits stop|reset --by WHO  refused until a shared store exists (exit 2)
+  hadavin-sdk [--config DIR] limits stop|reset --by WHO  needs a shared store (postgres); memory: exit 2
+  hadavin-sdk [--config DIR] migrate [--runtime-role R]  apply the postgres schema; the migration role's DSN
+                                                         comes from the HADAVIN_MIGRATE_DSN environment variable
   hadavin-sdk [--config DIR] audit verify                exit 0 intact, 1 not, 2 refused, 3 unreadable
 
 ``--config`` goes before the subcommand and overrides ``HADAVIN_CONFIG_DIR``. From a source checkout use ``uv run python -m hadavin_sdk.cli`` so
@@ -16,7 +18,7 @@ import sys
 
 from hadavin_sdk import evals
 from hadavin_sdk.audit import AuditUnavailable
-from hadavin_sdk.backends import make
+from hadavin_sdk.backends import make, platform_secrets
 from hadavin_sdk.config import load_config
 from hadavin_sdk.limits import Limits
 from hadavin_sdk.registry import load_registry
@@ -31,12 +33,16 @@ def main(argv: list[str] | None = None) -> int:
     lim = sub.add_parser("limits", help="kill switch")
     lim.add_argument("action", choices=["stop", "reset"])
     lim.add_argument("--by", required=True)
+    mig = sub.add_parser("migrate", help="apply the postgres store schema (migration role)")
+    mig.add_argument("--runtime-role", help="grant this database role SELECT, INSERT, UPDATE")
     aud = sub.add_parser("audit", help="check the chain audit")
     aud.add_argument("action", choices=["verify"])
     args = p.parse_args(argv)
     if args.config:
         os.environ["HADAVIN_CONFIG_DIR"] = args.config
     cfg = load_config()
+    if args.cmd == "migrate":
+        return _migrate(cfg, args.runtime_role)
     reg = load_registry(cfg)
 
     if args.cmd == "gate":
@@ -50,21 +56,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0 if run.green else 1
 
-    if args.cmd == "audit":
-        b = cfg.backends
-        if b.audit.kind != "chain" or b.store.kind == "memory":
-            print(
-                "refused: audit verify reads a chain audit in a shared store (Postgres); "
-                "a memory store lives inside one running process.",
-                file=sys.stderr,
-            )
-            return 2
-        secrets = make("secrets", b.secrets)
-        signer = make("signer", b.signer, secrets)
-        store = make("store", b.store, secrets)
-        return audit_verify(make("audit", b.audit, secrets, store=store, signer=signer))
-
-    if cfg.backends.store.kind == "memory":
+    b = cfg.backends
+    if args.cmd == "audit" and b.audit.kind != "chain":
+        print(
+            "refused: audit verify reads a chain audit (backends.audit.kind: chain)",
+            file=sys.stderr,
+        )
+        return 2
+    if b.store.kind == "memory":
         # The memory store lives inside one running process; a separate CLI process cannot reach it, so
         # claiming "stopped" here would be a lie. Use App.limits.stop() in-process until Postgres arrives.
         print(
@@ -73,7 +72,34 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    raise NotImplementedError("shared-store kill switch arrives with store.postgres")
+    secrets = make("secrets", b.secrets)
+    # Same start-up probe as app.build: a missing DSN is a clean ConfigError, not a KeyError mid-build.
+    platform_secrets.check(secrets, [b.signer, b.store, b.audit], set())
+    signer = make("signer", b.signer, secrets)
+    store = make("store", b.store, secrets)
+    audit = make("audit", b.audit, secrets, store=store, signer=signer)
+    if args.cmd == "audit":
+        return audit_verify(audit)
+    return kill_switch(Limits(store, audit, reg), args.action, args.by)
+
+
+def _migrate(cfg, runtime_role: str | None) -> int:
+    store = cfg.backends.store
+    if store.kind != "postgres":
+        print(
+            f"refused: migrate is for the postgres store; this config uses {store.kind!r}",
+            file=sys.stderr,
+        )
+        return 2
+    dsn = os.environ.get("HADAVIN_MIGRATE_DSN")
+    if not dsn:
+        print("refused: set HADAVIN_MIGRATE_DSN to the migration role's DSN", file=sys.stderr)
+        return 2
+    from hadavin_sdk.store.migrate import migrate
+
+    applied = migrate(dsn, runtime_role=runtime_role, iam_auth=store.iam_auth, region=store.region)
+    print(f"applied: {', '.join(applied) or 'nothing (up to date)'}")
+    return 0
 
 
 def audit_verify(audit) -> int:

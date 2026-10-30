@@ -50,10 +50,14 @@ def test_audit_intent_failure_raises_audit_unavailable(audit, monkeypatch):
     def boom(*a, **k):
         raise OSError("down")
 
-    monkeypatch.setattr(AuditEvent, "model_dump_json", boom)
-    with pytest.raises(AuditUnavailable):
-        audit.write_intent(_event())
-    assert audit.write_outcome(_event()) is None  # never raises
+    outcome = _event()
+    with monkeypatch.context() as patch:
+        patch.setattr(AuditEvent, "model_dump_json", boom)
+        with pytest.raises(AuditUnavailable):
+            audit.write_intent(_event())
+        assert audit.write_outcome(outcome) is None  # never raises
+    assert audit.reconcile() == 1
+    assert [e.event_id for e in audit.events()] == [outcome.event_id]
 
 
 # --- Secrets -------------------------------------------------------------------------------------

@@ -76,6 +76,7 @@ class Registry:
         Upgrade note (slice 2 P1a): this version changes the hash itself, so every agent needs ONE new gate run
         (`hadavin-sdk gate <agent>`) before the runtime starts it again; see CHANGELOG.md."""
         agent = self.agents[agent_id]
+        llm = self.config.backends.llm
 
         def dump(model) -> dict:
             return model.model_dump(mode="json", exclude_defaults=True)
@@ -85,7 +86,13 @@ class Registry:
                 "agent": dump(agent),
                 "route": dump(self.config.routes[agent.model_route]),
                 "actions": [dump(self.contracts[a]) for a in sorted(agent.scope_allowed)],
-                "llm_backend": self.config.backends.llm.kind,
+                "llm_backend": llm.kind,
+                # Where the model runs (design 4.3); keys only when set, so `fake` agents keep their hash.
+                **{
+                    f"llm_{k}": getattr(llm, k)
+                    for k in ("platform", "base_url")
+                    if getattr(llm, k, None)
+                },
             }
         )
 
