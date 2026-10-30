@@ -77,10 +77,11 @@ def main(argv: list[str] | None = None) -> int:
     try:
         secrets = make("secrets", b.secrets)
         # Same start-up probe as app.build: a missing DSN is a clean ConfigError, not a KeyError mid-build.
-        platform_secrets.check(secrets, [b.signer, b.store, b.audit], set())
+        platform_secrets.check(secrets, [b.signer, b.anchor, b.store, b.audit], set())
         signer = make("signer", b.signer, secrets)
+        anchor = make("anchor", b.anchor, secrets)
         store = make("store", b.store, secrets)
-        audit = make("audit", b.audit, secrets, store=store, signer=signer)
+        audit = make("audit", b.audit, secrets, store=store, signer=signer, anchor=anchor)
     except ConfigError as exc:
         if args.cmd != "audit":
             raise
@@ -105,8 +106,10 @@ def _migrate(cfg, runtime_role: str | None) -> int:
         print("refused: set HADAVIN_MIGRATE_DSN to the migration role's DSN", file=sys.stderr)
         return 2
     from hadavin_sdk.store.migrate import migrate
+    from hadavin_sdk.store.postgres import password_source
 
-    applied = migrate(dsn, runtime_role=runtime_role, iam_auth=store.iam_auth, region=store.region)
+    password = password_source(store.iam_auth, store.region)  # RDS IAM sign-in, if configured
+    applied = migrate(dsn, runtime_role=runtime_role, password=password)
     print(f"applied: {', '.join(applied) or 'nothing (up to date)'}")
     return 0
 

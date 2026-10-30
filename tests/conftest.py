@@ -1,5 +1,6 @@
 """Shared fixtures: every test works on a copy of the fixture config in tmp_path, never the repo."""
 
+import os
 import secrets
 import shutil
 from pathlib import Path
@@ -9,6 +10,16 @@ import pytest
 from hadavin_sdk.models import GateRun
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+# Tests never reach a real AWS account: no profile, config or credential_process from the machine running
+# them, only fake keys (moto and the in-process stubs answer every call). Set before any boto3 session exists.
+for _name in ("AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_SESSION_TOKEN"):
+    os.environ.pop(_name, None)
+os.environ["AWS_CONFIG_FILE"] = os.devnull
+os.environ["AWS_SHARED_CREDENTIALS_FILE"] = os.devnull
+os.environ["AWS_ACCESS_KEY_ID"] = "AKIA" + "IOSFODNN7EXAMPLE"
+os.environ["AWS_SECRET_ACCESS_KEY"] = "fake" + "-secret-key"
+os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
 
 
 def make_cfg(tmp_path: Path, port: int = 0) -> Path:

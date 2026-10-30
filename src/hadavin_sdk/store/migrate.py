@@ -13,7 +13,7 @@ from pathlib import Path
 from psycopg import sql
 
 from hadavin_sdk.errors import ConfigError
-from hadavin_sdk.store.postgres import connect
+from hadavin_sdk.store.postgres import PasswordSource, connect
 
 MIGRATIONS = Path(__file__).parent / "migrations"
 TABLES = (
@@ -41,15 +41,14 @@ def migrate(
     dsn: str,
     *,
     runtime_role: str | None = None,
-    iam_auth: bool = False,
-    region: str | None = None,
+    password: PasswordSource | None = None,
 ) -> list[str]:
     """Apply pending migrations; return the versions applied by this call. With `runtime_role`, grant it
     SELECT, INSERT, UPDATE on the core tables (and the sequences behind their ids), nothing else."""
     if runtime_role is not None and not _ROLE.fullmatch(runtime_role):
         raise ConfigError(f"not a plain database role name: {runtime_role!r}")
     applied = []
-    with connect(dsn, iam_auth=iam_auth, region=region) as db, db.transaction():
+    with connect(dsn, password=password) as db, db.transaction():
         db.execute("SELECT pg_advisory_xact_lock(%s)", (_LOCK,))
         db.execute(
             "CREATE TABLE IF NOT EXISTS schema_migrations "

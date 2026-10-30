@@ -6,10 +6,14 @@ One server per test session (a daemon thread on a free loopback port); tests kee
 
 from __future__ import annotations
 
+import base64
 import json
 import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 ROOT = "root"  # the fake's admin token (a dev-server convention, not a secret)
 
@@ -22,6 +26,7 @@ class FakeVault:
         self.k8s: dict[str, str] = {}  # role -> jwt
         self.seen_namespaces: list[str | None] = []
         self.reads = 0
+        self.transit: dict[str, Ed25519PrivateKey] = {}
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -56,6 +61,23 @@ class FakeVault:
                     return self._send(200, {"auth": {"client_token": token}})
                 if self.headers.get("X-Vault-Token") not in fake.tokens:
                     return self._send(403, {"errors": ["permission denied"]})
+                if path.startswith(
+                    "sys/mounts/"
+                ):  # enable an engine (transit): as the dev server does
+                    self._body()
+                    return self._send(204)
+                if path.startswith("transit/keys/"):
+                    fake.transit[path.removeprefix("transit/keys/")] = Ed25519PrivateKey.generate()
+                    return self._send(204)
+                if path.startswith("transit/sign/"):
+                    key = fake.transit.get(path.removeprefix("transit/sign/"))
+                    body = self._body()
+                    if key is None or body.get("key_version") not in (None, 1):
+                        return self._send(400, {"errors": ["invalid key"]})
+                    sig = base64.b64encode(key.sign(base64.b64decode(body["input"]))).decode()
+                    return self._send(
+                        200, {"data": {"signature": f"vault:v1:{sig}", "key_version": 1}}
+                    )
                 mount, _, rest = path.partition("/data/")
                 fake.kv[f"{mount}/{rest}"] = self._body()["data"]
                 return self._send(200, {"data": {}})
@@ -64,6 +86,13 @@ class FakeVault:
                 fake.seen_namespaces.append(self.headers.get("X-Vault-Namespace"))
                 if self.headers.get("X-Vault-Token") not in fake.tokens:
                     return self._send(403, {"errors": ["permission denied"]})
+                if self.path.startswith("/v1/transit/keys/"):
+                    key = fake.transit.get(self.path.removeprefix("/v1/transit/keys/"))
+                    if key is None:
+                        return self._send(404, {"errors": []})
+                    raw = key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+                    keys = {"1": {"public_key": base64.b64encode(raw).decode()}}
+                    return self._send(200, {"data": {"type": "ed25519", "keys": keys}})
                 mount, _, rest = self.path.removeprefix("/v1/").partition("/data/")
                 if rest.endswith(
                     "/moved"

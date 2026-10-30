@@ -38,7 +38,8 @@ class GcpSecretManagerProvider(CachedSecrets):
             raise ConfigError(f"secret {name!r}: GCP names are letters, digits, '_' and '-'")
         path = f"projects/{self.project_id}/secrets/{name}/versions/latest"
         try:
-            data = self._client.access_secret_version(name=path).payload.data
+            # Bounded: a fetch holds the provider's lock (the SDK default is 60 s plus a 60 s retry deadline).
+            data = self._client.access_secret_version(name=path, retry=None, timeout=5).payload.data
         except NotFound:
             raise ConfigError(f"secret {name!r} not found in GCP Secret Manager") from None
         return data.decode("utf-8")

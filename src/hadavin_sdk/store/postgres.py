@@ -8,6 +8,7 @@ the DSN, the login is a 15-minute RDS IAM token and TLS is required.
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
@@ -34,21 +35,33 @@ from hadavin_sdk.models import (
 )
 from hadavin_sdk.store.protocol import NotFound, StaleState
 
+PasswordSource = Callable[[str, int, str], str]  # (host, port, user) -> a short-lived password
 
-def connect(dsn: str, *, iam_auth: bool = False, region: str | None = None) -> psycopg.Connection:
+
+def password_source(iam_auth: bool, region: str | None) -> PasswordSource | None:
+    """The sign-in helper for the settings: None (the DSN's own password), or RDS IAM (`store/auth_aws.py`,
+    the only module of the store that imports an AWS SDK)."""
+    if not iam_auth:
+        return None
+    try:
+        from hadavin_sdk.store import auth_aws
+    except ModuleNotFoundError as exc:
+        if (exc.name or "").startswith("hadavin_sdk"):
+            raise
+        raise ConfigError(
+            "store postgres with iam_auth needs: pip install hadavin-sdk[aws]"
+        ) from exc
+    return auth_aws.rds_iam(region)
+
+
+def connect(dsn: str, *, password: PasswordSource | None = None) -> psycopg.Connection:
     extra: dict[str, Any] = {}
-    if iam_auth:
+    if password is not None:
         from psycopg.conninfo import conninfo_to_dict
 
         parts = conninfo_to_dict(dsn)
         if not parts.get("password"):
-            import boto3  # the `aws` extra; checked when the store is built
-
-            token = boto3.client("rds", region_name=region).generate_db_auth_token(
-                DBHostname=parts["host"],
-                Port=int(parts.get("port") or 5432),
-                DBUsername=parts["user"],
-            )
+            token = password(parts["host"], int(parts.get("port") or 5432), parts["user"])
             extra = {"password": token, "sslmode": "require"}
     conn = psycopg.connect(dsn, autocommit=True, connect_timeout=10, **extra)
     # Plan hashes include created_at: datetimes must come back in UTC whatever the server's TimeZone is.
@@ -58,16 +71,10 @@ def connect(dsn: str, *, iam_auth: bool = False, region: str | None = None) -> p
 
 def build(settings, deps) -> PostgresStore:
     """Table factory: the DSN is a platform secret named in the settings (never the executor's)."""
-    if settings.iam_auth:
-        try:
-            import boto3  # noqa: F401
-        except ImportError as exc:
-            raise ConfigError(
-                "store postgres with iam_auth needs: pip install hadavin-sdk[aws]"
-            ) from exc
+    password = password_source(settings.iam_auth, settings.region)
     dsn = deps.resolve(settings.dsn_secret_name)
     try:
-        conn = connect(dsn, iam_auth=settings.iam_auth, region=settings.region)
+        conn = connect(dsn, password=password)
     except psycopg.OperationalError as exc:
         # The class only: driver messages can carry the host and user.
         raise ConfigError(f"store postgres: cannot connect ({exc.__class__.__name__})") from None

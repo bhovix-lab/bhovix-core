@@ -20,6 +20,11 @@ def no_signer(settings, deps) -> None:
     return None
 
 
+def no_anchor(settings, deps) -> None:
+    # The default: checkpoints stay only in the store (refused in prod by the environment table).
+    return None
+
+
 def memory_store(settings, deps) -> MemoryStore:
     return MemoryStore()
 
