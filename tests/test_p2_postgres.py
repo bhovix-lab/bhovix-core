@@ -134,7 +134,8 @@ def test_two_concurrent_migrate_runs_apply_once(fresh_dsn):
         t.start()
     for t in threads:
         t.join()
-    assert sorted(applied, key=len) == [[], ["0001_core", "0002_audit_chain"]]
+    every = sorted(p.stem for p in MIGRATIONS.glob("*.sql"))  # new migrations never break this test
+    assert sorted(applied, key=len) == [[], every]
     assert migrate(fresh_dsn) == []
 
 
