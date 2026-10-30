@@ -43,14 +43,14 @@ jobs:
           python-version: "3.13"
           activate-environment: true
           cache-suffix: "ci-check"
-      - name: Install (locked)
-        run: uv sync --locked
+      - name: Install (locked, every backend extra and the contract-suite test group)
+        run: uv sync --locked --all-extras --group test
       - name: Lint
         run: ruff check src tests demos
       - name: Format
         run: ruff format --check src tests demos
-      - name: Tests
-        run: pytest -q
+      - name: Tests (no live calls)
+        run: pytest -q -m "not live"
 
   security:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false

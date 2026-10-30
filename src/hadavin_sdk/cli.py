@@ -14,8 +14,8 @@ import os
 import sys
 
 from hadavin_sdk import evals
-from hadavin_sdk.app import make_llm
 from hadavin_sdk.audit import AuditUnavailable
+from hadavin_sdk.backends import make
 from hadavin_sdk.config import load_config
 from hadavin_sdk.limits import Limits
 from hadavin_sdk.registry import load_registry
@@ -37,14 +37,17 @@ def main(argv: list[str] | None = None) -> int:
     reg = load_registry(cfg)
 
     if args.cmd == "gate":
-        run = evals.gate(reg, make_llm(cfg), args.agent)
+        b = cfg.backends
+        run = evals.gate(
+            reg, make("llm", b.llm, make("secrets", b.secrets), routes=cfg.routes), args.agent
+        )
         print(
             f"{run.agent_id}: {run.passed}/{run.n} = {run.pass_rate:.2f} "
             f"(threshold {run.threshold:.2f}) -> {'GREEN' if run.green else 'RED'}"
         )
         return 0 if run.green else 1
 
-    if cfg.backends.store == "memory":
+    if cfg.backends.store.kind == "memory":
         # The memory store lives inside one running process; a separate CLI process cannot reach it, so
         # claiming "stopped" here would be a lie. Use App.limits.stop() in-process until Postgres arrives.
         print(

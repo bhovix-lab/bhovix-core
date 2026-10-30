@@ -34,7 +34,7 @@ def env(cfg_dir):
     channel = FakeChannel()
     appr = Approvals(
         MemoryStore(),
-        LocalDirSink(cfg.audit_dir),
+        LocalDirSink(cfg.backends.audit.dir),
         reg,
         channel,
         lambda run_id, status, d: decided.append((run_id, status)),

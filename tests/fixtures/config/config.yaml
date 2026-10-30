@@ -1,4 +1,5 @@
 # Test client config for the synthetic test-agent. Fakes only, $0.
+environment: dev
 routes:
   default:
     model_id: fake-model
@@ -6,16 +7,14 @@ routes:
     output_usd_per_mtok: "15.00"
     max_tokens: 1024
 backends:
-  llm: fake
+  secrets: fake
   store: memory
-  audit: local_dir
+  audit: {kind: local_dir, dir: audit}
+  llm: {kind: fake, recorded_dir: ../recorded}
+  detector: [{kind: regex, threshold: 0.5}]
   channel: fake
-  detector: regex
-audit_dir: audit
-recorded_dir: ../recorded
 golden_dir: ../golden
 inputs_dir: ../inputs
-detector_threshold: 0.5
 eval_threshold: 1.0
 check_modules:
   - tests.fixtures.checks

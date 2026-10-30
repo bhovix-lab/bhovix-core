@@ -95,7 +95,11 @@ def test_every_reversible_contract_names_an_existing_rollback_test():
     assert missing_rollback_tests(ROOT, action_dirs(ROOT)) == []
 
 
-SECRET_HOLDERS = {"hadavin_sdk.actions.secrets", "hadavin_sdk.actions.executor"}
+SECRET_HOLDERS = {
+    "hadavin_sdk.actions.secrets",
+    "hadavin_sdk.actions.executor",
+    "hadavin_sdk.backends.platform_secrets",  # backends' own secrets (design 4.4)
+}
 
 
 def secret_imports(pkg_dirs: list[Path]) -> list[str]:
@@ -121,6 +125,13 @@ def test_import_boundary_runtime_approvals_llm_never_see_secrets():
 def test_plant_runtime_importing_executor_is_caught(tmp_path):
     (tmp_path / "bad.py").write_text("from hadavin_sdk.actions import executor\n", encoding="utf-8")
     assert secret_imports([tmp_path]) == ["bad.py: hadavin_sdk.actions.executor"]
+
+
+def test_plant_runtime_importing_platform_secrets_is_caught(tmp_path):
+    (tmp_path / "bad.py").write_text(
+        "from hadavin_sdk.backends.platform_secrets import bound\n", encoding="utf-8"
+    )
+    assert secret_imports([tmp_path]) == ["bad.py: hadavin_sdk.backends.platform_secrets"]
 
 
 def test_plant_missing_rollback_test_is_caught(tmp_path):

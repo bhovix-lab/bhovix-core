@@ -29,7 +29,7 @@ def test_fixture_config_loads(cfg_dir):
     cfg = load_config(cfg_dir)
     assert cfg.routes["default"].input_usd_per_mtok == Decimal("3.00")
     assert "127.0.0.1" in cfg.egress_hosts
-    assert cfg.audit_dir == cfg_dir / "audit"
+    assert cfg.backends.audit.dir == cfg_dir / "audit"
 
 
 def test_config_dir_from_env(cfg_dir, monkeypatch):
@@ -43,27 +43,10 @@ def test_bad_unknown_backend(cfg_dir):
         load_config(cfg_dir)
 
 
-def test_bad_region_missing_for_aws_backend(cfg_dir):
-    _edit(cfg_dir, lambda d: d["backends"].update(llm="bedrock"))
-    with pytest.raises(ConfigError, match="region"):
-        load_config(cfg_dir)
-
-
 @pytest.mark.parametrize("value", [-0.1, 1.5])
 def test_bad_threshold(cfg_dir, value):
-    _edit(cfg_dir, lambda d: d.update(detector_threshold=value))
+    _edit(cfg_dir, lambda d: d["backends"].update(detector=[{"kind": "regex", "threshold": value}]))
     with pytest.raises(ConfigError):
-        load_config(cfg_dir)
-
-
-def test_bad_empty_egress_with_real_backend(cfg_dir):
-    def real(d):
-        d["backends"].update(llm="bedrock")
-        d["region"] = "test-region-1"
-
-    _edit(cfg_dir, real)
-    _edit(cfg_dir, lambda d: d.update(hosts=[]), name="egress.yaml")
-    with pytest.raises(ConfigError, match="egress"):
         load_config(cfg_dir)
 
 

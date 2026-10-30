@@ -11,12 +11,13 @@ import yaml
 
 from hadavin_sdk import evals
 from hadavin_sdk.actions.secrets import FakeSecretProvider
-from hadavin_sdk.app import build, make_llm
+from hadavin_sdk.app import build
 from hadavin_sdk.approvals import FakeChannel
 from hadavin_sdk.approvals.requests import WARNING, summary
 from hadavin_sdk.approvals.slack import verify
 from hadavin_sdk.config import ConfigError, load_config
 from hadavin_sdk.guard import RegexDetector
+from hadavin_sdk.llm import FakeLLM
 from hadavin_sdk.models import GateDecision, RunState
 from hadavin_sdk.registry import load_registry
 from hadavin_sdk.runtime.agent_loop import Hooks, Unqualified
@@ -37,11 +38,13 @@ def _edit(path, fn):
 @pytest.fixture
 def app(live_cfg_dir, fake_system):
     cfg = load_config(live_cfg_dir)
-    assert evals.gate(load_registry(cfg), make_llm(cfg), "test-agent").green
+    assert evals.gate(
+        load_registry(cfg), FakeLLM(cfg.backends.llm.recorded_dir, cfg.routes), "test-agent"
+    ).green
     return build(
         live_cfg_dir,
-        FakeSecretProvider({"fixture-token": fake_system.token}),
         ["test-agent"],
+        secrets=FakeSecretProvider({"fixture-token": fake_system.token}),
         channel=FakeChannel(SECRET),
         timeout_s=0.5,
     )
@@ -156,11 +159,17 @@ def test_unknown_principal_denied(cfg_dir):
 # 13: a changed golden set invalidates the qualification
 def test_changed_golden_set_unqualifies(live_cfg_dir, fake_system):
     cfg = load_config(live_cfg_dir)
-    assert evals.gate(load_registry(cfg), make_llm(cfg), "test-agent").green
+    assert evals.gate(
+        load_registry(cfg), FakeLLM(cfg.backends.llm.recorded_dir, cfg.routes), "test-agent"
+    ).green
     golden = cfg.golden_dir / "test-agent.jsonl"
     golden.write_text("\n".join(golden.read_text(encoding="utf-8").splitlines()[:1]) + "\n")
     with pytest.raises(Unqualified):
-        build(live_cfg_dir, FakeSecretProvider({}), ["test-agent"])
+        build(
+            live_cfg_dir,
+            ["test-agent"],
+            secrets=FakeSecretProvider({"fixture-token": fake_system.token}),
+        )
 
 
 # 14: approver identity comes from the verified callback only
@@ -366,24 +375,34 @@ def test_tool_exception_needs_a_person(cfg_dir):
 # CodeRabbit on f33a53f: golden refs validated at start-up, not only at gate time
 def test_golden_ref_escape_refused_at_startup(live_cfg_dir, fake_system):
     cfg = load_config(live_cfg_dir)
-    assert evals.gate(load_registry(cfg), make_llm(cfg), "test-agent").green
+    assert evals.gate(
+        load_registry(cfg), FakeLLM(cfg.backends.llm.recorded_dir, cfg.routes), "test-agent"
+    ).green
     golden = cfg.golden_dir / "test-agent.jsonl"
     golden.write_text(
         '{"id": "x", "input_ref": "../config/config.yaml", "expected": {}}\n', encoding="utf-8"
     )
     with pytest.raises(ConfigError, match="escapes"):
-        build(live_cfg_dir, FakeSecretProvider({}), ["test-agent"])
+        build(
+            live_cfg_dir,
+            ["test-agent"],
+            secrets=FakeSecretProvider({"fixture-token": fake_system.token}),
+        )
 
 
 # CodeRabbit on f33a53f: a torn qualified.jsonl tail neither blocks valid lines nor corrupts new ones
 def test_torn_qualified_tail_is_recovered(live_cfg_dir, fake_system):
     cfg = load_config(live_cfg_dir)
     reg = load_registry(cfg)
-    assert evals.gate(reg, make_llm(cfg), "test-agent").green
+    assert evals.gate(reg, FakeLLM(cfg.backends.llm.recorded_dir, cfg.routes), "test-agent").green
     path = cfg.root / "qualified.jsonl"
     path.write_bytes(path.read_bytes() + b'{"agent_id": "test-ag')  # torn append, no newline
-    build(live_cfg_dir, FakeSecretProvider({}), ["test-agent"])  # still starts: valid line counts
-    assert evals.gate(reg, make_llm(cfg), "test-agent").green
+    build(
+        live_cfg_dir,
+        ["test-agent"],
+        secrets=FakeSecretProvider({"fixture-token": fake_system.token}),
+    )  # still starts: valid line counts
+    assert evals.gate(reg, FakeLLM(cfg.backends.llm.recorded_dir, cfg.routes), "test-agent").green
     lines = path.read_text(encoding="utf-8").splitlines()
     assert (
         len(lines) == 3

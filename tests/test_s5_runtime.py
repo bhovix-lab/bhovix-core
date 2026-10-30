@@ -24,14 +24,14 @@ def build(cfg_dir, hooks=None, qualified=True):
     reg = load_registry(cfg)
     if qualified:
         qualify(reg)
-    store, audit = MemoryStore(), LocalDirSink(cfg.audit_dir)
+    store, audit = MemoryStore(), LocalDirSink(cfg.backends.audit.dir)
     limits = Limits(store, audit, reg)
     rt = Runtime(
         reg,
         store,
         audit,
-        FakeLLM(cfg.recorded_dir, cfg.routes),
-        RegexDetector(cfg.detector_threshold),
+        FakeLLM(cfg.backends.llm.recorded_dir, cfg.routes),
+        RegexDetector(cfg.backends.detector[0].threshold),
         limits,
         ["test-agent"],
         hooks,
