@@ -310,7 +310,9 @@ class Runtime:
             return self._to(run, S.NEEDS_PERSON, "audit_unavailable")
         run = self._to(run, S.EXECUTING)
         try:
-            result = self.hooks.execute(plan, decision, approval)
+            result = self.hooks.execute(
+                plan, decision, approval, heartbeat=lambda: self.store.touch(run.run_id)
+            )
         except Exception:  # noqa: BLE001 - the side effect may have happened: never leave EXECUTING
             result = RunResult(outcome="unknown", error_code="executor_error")
         self._note(

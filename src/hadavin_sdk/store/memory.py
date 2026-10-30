@@ -10,6 +10,7 @@ from decimal import Decimal
 from hadavin_sdk.models import (
     ApprovalDecision,
     ApprovalRequest,
+    ApprovalStatus,
     DeadLetter,
     GateDecision,
     KillSwitch,
@@ -74,19 +75,26 @@ class MemoryStore:
             self._runs[run_id] = run.model_copy(update={"cost_usd": run.cost_usd + usd})
 
     def touch(self, run_id: str) -> None:
+        """Heartbeat only: moves `updated_at`, never checks or changes the state (`transition` is the only
+        compare-and-set)."""
         with self._lock:
             run = self._runs.get(run_id)
             if run is None:
                 raise NotFound(run_id)
             self._runs[run_id] = run.model_copy(update={"updated_at": now()})
 
-    def list_runs(self, state: RunState, updated_before: datetime) -> list[Run]:
+    def list_runs(self, state: RunState, updated_before: datetime, limit: int = 100) -> list[Run]:
+        """Oldest first, at most `limit`."""
         with self._lock:
-            return [
-                r.model_copy(deep=True)
-                for r in self._runs.values()
-                if r.state == state and r.updated_at < updated_before
-            ]
+            found = sorted(
+                (
+                    r
+                    for r in self._runs.values()
+                    if r.state == state and r.updated_at < updated_before
+                ),
+                key=lambda r: r.updated_at,
+            )
+            return [r.model_copy(deep=True) for r in found[:limit]]
 
     def save_plan(self, plan: Plan) -> None:
         with self._lock:
@@ -142,7 +150,7 @@ class MemoryStore:
                     return d.model_copy(deep=True)
             return None
 
-    def list_approvals(self, statuses: set[str]) -> list[ApprovalRequest]:
+    def list_approvals(self, statuses: set[ApprovalStatus]) -> list[ApprovalRequest]:
         with self._lock:
             return [
                 r.model_copy(deep=True) for r in self._approvals.values() if r.status in statuses

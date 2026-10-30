@@ -202,7 +202,9 @@ def test_hook_exceptions_end_in_a_final_state(cfg_dir, which):
 
     hooks = Hooks(
         request_approval=None,
-        execute=lambda p, d, a: RunResult(outcome="succeeded", external_ref="rec-001"),
+        execute=lambda p, d, a, heartbeat=None: RunResult(
+            outcome="succeeded", external_ref="rec-001"
+        ),
         verify=lambda p, r: False,
         rollback=lambda p, r: RunResult(outcome="failed", error_code="x"),
     )

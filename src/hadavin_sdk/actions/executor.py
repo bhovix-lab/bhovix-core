@@ -55,12 +55,16 @@ class Executor:
     ) -> None:
         self.registry, self._secrets, self.timeout_s = registry, secrets, timeout_s
 
-    def _caller(self, contract: ActionContract) -> Call:
+    def _caller(
+        self, contract: ActionContract, heartbeat: Callable[[], None] | None = None
+    ) -> Call:
         cfg = self.registry.config
         base = cfg.systems[contract.executor.system].base_url.rstrip("/")
         token = self._secrets.get(contract.executor.secret_name)
 
         def call(method: str, path: str, body: Any = None, headers: dict | None = None):
+            if heartbeat is not None:
+                heartbeat()  # each attempt (call, lookup) marks the run alive for tick's stuck rule
             url = base + path
             if not url_allowed(url, cfg.allow_insecure_loopback):  # re-checked at call time
                 raise EgressRefused("https only (http only for loopback when explicitly allowed)")
@@ -88,8 +92,14 @@ class Executor:
         return method, path.format(key=quote(key, safe=""), **enc)
 
     def execute(
-        self, plan: Plan, decision: GateDecision, approval: ApprovalDecision | None = None
+        self,
+        plan: Plan,
+        decision: GateDecision,
+        approval: ApprovalDecision | None = None,
+        heartbeat: Callable[[], None] | None = None,
     ) -> RunResult:
+        """`heartbeat` is called before every HTTP attempt. The runtime passes `store.touch` for the run, so the
+        executor never holds the store (trust boundary) and long retries never look stuck."""
         h = plan.hash()
         if decision.run_id != plan.run_id:
             return RunResult(outcome="failed", error_code="run_mismatch")
@@ -102,7 +112,7 @@ class Executor:
         if decision.outcome == "deny":
             return RunResult(outcome="failed", error_code="denied")
         contract = self.registry.contracts[plan.action_id]
-        call = self._caller(contract)
+        call = self._caller(contract, heartbeat)
         method, path = self._path(contract.executor.operation, plan.inputs, plan.idempotency_key)
         body = plan.inputs if method in {"POST", "PUT", "PATCH"} else None
         try:
