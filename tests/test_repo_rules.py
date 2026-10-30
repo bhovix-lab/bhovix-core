@@ -97,6 +97,8 @@ def test_every_reversible_contract_names_an_existing_rollback_test():
 
 SECRET_HOLDERS = {
     "hadavin_sdk.actions.secrets",
+    "hadavin_sdk.actions.secrets_env",
+    "hadavin_sdk.actions.secrets_aws",
     "hadavin_sdk.actions.executor",
     "hadavin_sdk.backends.platform_secrets",  # backends' own secrets (design 4.4)
 }
