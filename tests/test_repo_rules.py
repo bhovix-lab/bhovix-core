@@ -5,6 +5,8 @@ import subprocess
 import tomllib
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 LICENCE_TEXT = (
     "Copyright (c) 2026 Bhovix Lab. All rights reserved.\n"
@@ -53,8 +55,30 @@ def core_imports_demos(core_dir: Path) -> list[str]:
                 names = [alias.name for alias in node.names]
             elif isinstance(node, ast.ImportFrom) and node.module:
                 names = [node.module]
-            hits += [f"{path.name}: {n}" for n in names if n.split(".")[0] in {"demos", "demo"}]
+            hits += [
+                f"{path.name}: {n}" for n in names if n.split(".")[0] in {"demos", "demo", "tests"}
+            ]
     return hits
+
+
+def missing_rollback_tests(root: Path, action_dirs: list[Path]) -> list[str]:
+    """Every reversible contract must name a rollback_test that exists (file + test function)."""
+    problems = []
+    for folder in action_dirs:
+        for path in sorted(folder.glob("*.yaml")):
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+            if data.get("risk_class") != "reversible":
+                continue
+            node = data.get("rollback_test") or ""
+            file, _, func = node.partition("::")
+            target = root / file
+            if not func or not target.is_file() or f"def {func}(" not in target.read_text("utf-8"):
+                problems.append(f"{path.name}: rollback_test {node!r} not found")
+    return problems
+
+
+def action_dirs(root: Path) -> list[Path]:
+    return [root / "tests/fixtures/config/actions", *root.glob("demos/*/config/actions")]
 
 
 def test_licences_are_proprietary():
@@ -65,6 +89,19 @@ def test_licences_are_proprietary():
 
 def test_core_never_imports_demos():
     assert core_imports_demos(ROOT / "src" / "bhovix_core") == []
+
+
+def test_plant_missing_rollback_test_is_caught(tmp_path):
+    actions = tmp_path / "actions"
+    actions.mkdir()
+    (actions / "a.yaml").write_text(
+        "risk_class: reversible\nrollback_test: tests/t.py::test_gone\n", encoding="utf-8"
+    )
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "t.py").write_text("def test_other():\n    pass\n", encoding="utf-8")
+    assert missing_rollback_tests(tmp_path, [actions]) == [
+        "a.yaml: rollback_test 'tests/t.py::test_gone' not found"
+    ]
 
 
 # Plant checks: each guard must catch a planted violation.

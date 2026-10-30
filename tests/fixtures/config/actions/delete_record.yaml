@@ -1,0 +1,24 @@
+id: delete_record
+version: 1
+description: Delete one record from the fixture system.
+input_schema:
+  type: object
+  required: [id]
+  additionalProperties: false
+  properties:
+    id: {type: string, minLength: 1, maxLength: 64}
+risk_class: sign_off
+targets_production: false
+changes_spend: false
+executor:
+  kind: http
+  system: fixture-records
+  operation: DELETE /records/{id}
+  lookup_operation: null
+  secret_name: fixture-token
+idempotency_header: Idempotency-Key
+verify_check: tests.fixtures.checks:verify_deleted
+rollback: null
+rollback_test: null
+chain_id: chain-abc
+expected_outcome: the record no longer exists

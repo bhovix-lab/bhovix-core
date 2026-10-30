@@ -1,0 +1,123 @@
+"""Agent registry: loads agents, principals, chains and action contracts, and checks them together.
+
+Every cross-file problem fails at start-up with ``ConfigError``.
+"""
+
+from __future__ import annotations
+
+import hashlib
+from dataclasses import dataclass
+from typing import Literal
+
+import yaml
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from bhovix_core.actions.contract import ActionContract
+from bhovix_core.config import Config, ConfigError, Money
+from bhovix_core.identity import Principal
+from bhovix_core.models import ChainStep, sha256_hex
+
+
+class Budget(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    daily: Money
+    monthly: Money
+
+
+class AgentRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    id: str
+    status: Literal["draft", "live", "retired"]
+    data_class: Literal["public", "internal", "confidential", "restricted"]
+    model_route: str
+    prompt_file: str
+    scope_allowed: list[str]
+    tools_allowed: list[str] = []
+    max_steps: int = Field(gt=0)
+    budget_usd: Budget
+
+
+class Chain(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    id: str
+    steps: list[ChainStep]
+
+
+@dataclass(frozen=True)
+class Registry:
+    config: Config
+    agents: dict[str, AgentRecord]
+    principals: dict[str, Principal]
+    chains: dict[str, Chain]
+    contracts: dict[str, ActionContract]
+
+    def prompt(self, agent_id: str) -> str:
+        return (self.config.root / self.agents[agent_id].prompt_file).read_text(encoding="utf-8")
+
+    def prompt_sha256(self, agent_id: str) -> str:
+        data = (self.config.root / self.agents[agent_id].prompt_file).read_bytes()
+        return hashlib.sha256(data).hexdigest()
+
+    def config_hash(self, agent_id: str) -> str:
+        agent = self.agents[agent_id]
+        return sha256_hex(
+            {
+                "agent": agent.model_dump(mode="json"),
+                "route": self.config.routes[agent.model_route].model_dump(mode="json"),
+                "actions": [
+                    self.contracts[a].model_dump(mode="json") for a in sorted(agent.scope_allowed)
+                ],
+            }
+        )
+
+    def tools_for(self, agent_id: str, available: set[str]) -> list[str]:
+        """Non-action tools the loop may offer: only those listed. Empty list means none."""
+        return sorted(set(self.agents[agent_id].tools_allowed) & available)
+
+
+def _yaml(path) -> object:
+    return yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else None
+
+
+def load_registry(config: Config) -> Registry:
+    root = config.root
+    try:
+        agents = {a["id"]: AgentRecord(**a) for a in (_yaml(root / "agents.yaml") or [])}
+        principals = {p["id"]: Principal(**p) for p in (_yaml(root / "principals.yaml") or [])}
+        chains = {c["id"]: Chain(**c) for c in (_yaml(root / "chains.yaml") or [])}
+        contracts = {}
+        for path in sorted((root / "actions").glob("*.yaml")):
+            c = ActionContract(**_yaml(path))
+            contracts[c.id] = c
+    except (ValidationError, TypeError) as exc:
+        raise ConfigError(str(exc)) from exc
+    problems = _cross_check(config, agents, chains, contracts)
+    if problems:
+        raise ConfigError("; ".join(problems))
+    return Registry(config, agents, principals, chains, contracts)
+
+
+def _cross_check(config, agents, chains, contracts) -> list[str]:
+    out = []
+    for a in agents.values():
+        if a.model_route not in config.routes:
+            out.append(f"agent {a.id}: unknown model_route {a.model_route}")
+        out += [f"agent {a.id}: no contract for {x}" for x in a.scope_allowed if x not in contracts]
+        if not (config.root / a.prompt_file).is_file():
+            out.append(f"agent {a.id}: prompt_file missing")
+    for c in chains.values():
+        if not c.steps:
+            out.append(f"chain {c.id}: no steps")
+        for i, s in enumerate(c.steps):
+            if not s.approver_ids or s.timeout_s <= 0:
+                out.append(f"chain {c.id} step {i}: needs approvers and timeout_s > 0")
+    for c in contracts.values():
+        if c.chain_id not in chains:
+            out.append(f"action {c.id}: unknown chain {c.chain_id}")
+        for ref in filter(None, [c.verify_check, c.rollback]):
+            module = ref.split(":", 1)[0]
+            if ":" not in ref or module not in config.check_modules:
+                out.append(f"action {c.id}: {ref} is outside check_modules")
+        if c.executor.system not in config.systems:
+            out.append(f"action {c.id}: unknown system {c.executor.system}")
+    return out

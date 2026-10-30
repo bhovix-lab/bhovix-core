@@ -1,0 +1,8 @@
+- id: chain-abc
+  steps:
+    - approver_ids: [user:a]
+      timeout_s: 14400
+    - approver_ids: [user:b]
+      timeout_s: 14400
+    - approver_ids: [user:c]
+      timeout_s: 14400

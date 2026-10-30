@@ -1,0 +1,12 @@
+- id: svc:test-agent
+  kind: service
+  rights: [lookup_record, create_draft_record, delete_record]
+- id: user:a
+  kind: person
+  approver_of: [chain-abc]
+- id: user:b
+  kind: person
+  approver_of: [chain-abc]
+- id: user:c
+  kind: person
+  approver_of: [chain-abc]
