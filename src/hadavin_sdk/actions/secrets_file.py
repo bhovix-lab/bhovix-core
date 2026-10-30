@@ -32,7 +32,9 @@ class MountedFileProvider(CachedSecrets):
         # ConfigError on `..`, absolute names or links out of the folder. The result is the real path, so
         # O_NOFOLLOW below refuses a link swapped in after this check.
         path = confined(self.root, name)
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+        # O_NONBLOCK: a FIFO planted in the folder must not hang the open (S_ISREG below then refuses it).
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        flags |= getattr(os, "O_BINARY", 0)
         try:
             fd = os.open(path, flags)
         except FileNotFoundError:

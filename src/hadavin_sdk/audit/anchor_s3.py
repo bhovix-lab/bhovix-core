@@ -69,7 +69,8 @@ class S3Anchor:
 
 
 def build(settings, deps) -> S3Anchor:
-    """`backends.anchor: {kind: s3_object_lock, ...}`; `endpoint_url` for MinIO / Ceph RGW (Object Lock on)."""
+    """`backends.anchor: {kind: s3_object_lock, ...}`; `endpoint_url` for MinIO / Ceph RGW (Object Lock on; the
+    store must accept conditional puts (`If-None-Match: *`) and SHA-256 checksums: older Ceph releases do not)."""
     # Anchors are written inline every N audit rows: a slow S3 must cost seconds, not botocore's 60 s defaults.
     config = Config(connect_timeout=3, read_timeout=5, retries={"total_max_attempts": 2})
     client = boto3.client(

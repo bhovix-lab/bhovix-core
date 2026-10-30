@@ -239,6 +239,15 @@ def test_mounted_files_are_checked_on_the_opened_file_never_followed_through_a_l
     assert flags & getattr(os, "O_NOFOLLOW", 0) == getattr(os, "O_NOFOLLOW", 0)
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="no FIFOs on this OS")
+def test_a_fifo_in_the_mounted_folder_is_refused_without_hanging(tmp_path):
+    root = tmp_path / "mounted"
+    root.mkdir()
+    os.mkfifo(root / "db", 0o400)
+    with pytest.raises(ConfigError, match="not a regular file"):
+        MountedFileProvider(root).get("db")
+
+
 @pytest.mark.skipif(not POSIX, reason="Windows has no group/other bits; its folder ACL decides")
 @pytest.mark.parametrize("mode", [0o460, 0o402, 0o404])
 def test_mounted_files_writable_by_others_or_readable_by_all_are_refused(tmp_path, mode):
