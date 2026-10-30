@@ -66,6 +66,17 @@ class Store(Protocol):
     def update_approval_request(
         self, req: ApprovalRequest, expected_status: str, expected_step: int
     ) -> None: ...
+    def record_decision(
+        self,
+        decision: ApprovalDecision,
+        req: ApprovalRequest,
+        expected_status: str,
+        expected_step: int,
+    ) -> None:
+        """Atomically: save the decision (one per approval step) and compare-and-set the request. Either
+        both happen or neither (StaleState): no decision row is ever kept for a click that lost."""
+        ...
+
     def list_due_approvals(self, now: datetime) -> list[ApprovalRequest]: ...
     def save_approval_decision(self, decision: ApprovalDecision) -> None:
         """One per (approval_id, step): a second one raises StaleState."""

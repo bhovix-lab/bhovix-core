@@ -7,7 +7,9 @@ the DSN, the login is a 15-minute RDS IAM token and TLS is required.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
+import os
 import threading
 from datetime import date, datetime
 from decimal import Decimal
@@ -40,39 +42,65 @@ from hadavin_sdk.store.protocol import NotFound, StaleState, StoreUnavailable
 _LOG = logging.getLogger("hadavin_sdk.store")
 
 
-_STRONG_TLS = frozenset({"require", "verify-ca", "verify-full"})
-_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+_VERIFIED_TLS = frozenset({"verify-ca", "verify-full"})
 
 
-def tls_mode(dsn: str, *, iam_auth: bool = False, sslmode: str | None = None) -> str | None:
+def _is_local(parts: dict) -> bool:
+    """Unix socket or loopback only. A host from PGHOST/hostaddr counts; anything unknown is remote."""
+    hosts = str(parts.get("host") or parts.get("hostaddr") or os.environ.get("PGHOST") or "")
+    if not hosts or hosts.startswith("/"):
+        return True
+    for h in hosts.split(","):
+        if h == "localhost":
+            continue
+        try:
+            if not ipaddress.ip_address(h).is_loopback:
+                return False
+        except ValueError:
+            return False
+    return True
+
+
+def tls_mode(
+    dsn: str, *, iam_auth: bool = False, sslmode: str | None = None, sslrootcert: str | None = None
+) -> str | None:
     """The sslmode to connect with: the setting, else the DSN's, else `require` for a non-local host.
-    With iam_auth (a bearer token is sent) anything weaker than `require` is refused."""
+    With iam_auth a 15-minute bearer token is sent, so the server must be verified: `verify-full` by
+    default, `verify-ca` allowed, weaker refused, and a CA bundle (`sslrootcert`) required."""
     parts = conninfo_to_dict(dsn)
     mode = sslmode or parts.get("sslmode")
     if iam_auth:
-        if mode and mode not in _STRONG_TLS:
+        mode = mode or "verify-full"
+        if mode not in _VERIFIED_TLS:
             raise ConfigError(
-                f"store postgres: iam_auth needs TLS (sslmode require or stronger), not {mode}"
+                "store postgres: iam_auth needs a verified server "
+                f"(sslmode verify-full or verify-ca), not {mode}"
             )
-        return mode or "require"
+        if not (sslrootcert or parts.get("sslrootcert")):
+            raise ConfigError("store postgres: iam_auth needs sslrootcert (the database CA bundle)")
+        return mode
     if mode:
         return mode
-    host = str(parts.get("host") or "")
-    local = not host or host.startswith("/") or all(h in _LOCAL_HOSTS for h in host.split(","))
-    return None if local else "require"
+    return None if _is_local(parts) else "require"
 
 
 def connect(
-    dsn: str, *, iam_auth: bool = False, region: str | None = None, sslmode: str | None = None
+    dsn: str,
+    *,
+    iam_auth: bool = False,
+    region: str | None = None,
+    sslmode: str | None = None,
+    sslrootcert: str | None = None,
 ) -> psycopg.Connection:
     extra: dict[str, Any] = {}
-    if mode := tls_mode(dsn, iam_auth=iam_auth, sslmode=sslmode):
+    if mode := tls_mode(dsn, iam_auth=iam_auth, sslmode=sslmode, sslrootcert=sslrootcert):
         extra["sslmode"] = mode
+    if sslrootcert:
+        extra["sslrootcert"] = sslrootcert
     if iam_auth:
         parts = conninfo_to_dict(dsn)
-        if not parts.get(
-            "password"
-        ):  # the migration role may log in with a password; the runtime never
+        # The migration role may log in with a password; the runtime never (refused in build()).
+        if not parts.get("password"):
             import boto3  # the `aws` extra; checked when the store is built
 
             extra["password"] = boto3.client("rds", region_name=region).generate_db_auth_token(
@@ -102,7 +130,11 @@ def build(settings, deps) -> PostgresStore:
         )
     try:
         conn = connect(
-            dsn, iam_auth=settings.iam_auth, region=settings.region, sslmode=settings.sslmode
+            dsn,
+            iam_auth=settings.iam_auth,
+            region=settings.region,
+            sslmode=settings.sslmode,
+            sslrootcert=settings.sslrootcert,
         )
     except psycopg.OperationalError as exc:
         # The class only: driver messages can carry the host and user.
@@ -264,6 +296,44 @@ class PostgresStore:
         with self._lock:
             cur = self._exec(query, [*values, req.approval_id, expected_status, expected_step])
         if cur.rowcount == 0:
+            raise self._missing_or_stale(
+                "approval_requests",
+                "approval_id",
+                req.approval_id,
+                f"{req.approval_id}: not {expected_status}/{expected_step}",
+            )
+
+    def record_decision(
+        self,
+        decision: ApprovalDecision,
+        req: ApprovalRequest,
+        expected_status: str,
+        expected_step: int,
+    ) -> None:
+        drow, rrow = _row(decision), _row(req)
+        insert = sql.SQL("INSERT INTO approval_decisions ({}) VALUES ({})").format(
+            sql.SQL(", ").join(sql.Identifier(c) for c in drow),
+            sql.SQL(", ").join(sql.Placeholder() * len(drow)),
+        )
+        update = sql.SQL(
+            "UPDATE approval_requests SET {} WHERE approval_id = %s AND status = %s AND current_step = %s"
+        ).format(
+            sql.SQL(", ").join(
+                sql.SQL("{} = %s").format(sql.Identifier(c)) for c in rrow if c != "approval_id"
+            )
+        )
+        values = [v for c, v in rrow.items() if c != "approval_id"]
+        lost = False
+        try:
+            with self._lock, self._db.transaction():
+                self._exec(insert, list(drow.values()))
+                cur = self._exec(update, [*values, req.approval_id, expected_status, expected_step])
+                if cur.rowcount == 0:
+                    lost = True
+                    raise psycopg.Rollback()  # the insert above is undone with it
+        except psycopg.errors.UniqueViolation:
+            lost = True
+        if lost:
             raise self._missing_or_stale(
                 "approval_requests",
                 "approval_id",

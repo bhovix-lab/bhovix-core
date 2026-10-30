@@ -41,6 +41,7 @@ def migrate(
     iam_auth: bool = False,
     region: str | None = None,
     sslmode: str | None = None,
+    sslrootcert: str | None = None,
 ) -> list[str]:
     """Apply pending migrations; return the versions applied by this call. With `runtime_role`, grant it
     SELECT, INSERT (and UPDATE where rows change) on the core tables and USAGE on the id sequences, nothing
@@ -48,7 +49,12 @@ def migrate(
     if runtime_role is not None and not _ROLE.fullmatch(runtime_role):
         raise ConfigError(f"not a plain database role name: {runtime_role!r}")
     applied = []
-    with connect(dsn, iam_auth=iam_auth, region=region, sslmode=sslmode) as db, db.transaction():
+    with (
+        connect(
+            dsn, iam_auth=iam_auth, region=region, sslmode=sslmode, sslrootcert=sslrootcert
+        ) as db,
+        db.transaction(),
+    ):
         db.execute("SELECT pg_advisory_xact_lock(%s)", (_LOCK,))
         db.execute(
             "CREATE TABLE IF NOT EXISTS schema_migrations "

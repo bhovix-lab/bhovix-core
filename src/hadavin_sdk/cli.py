@@ -102,6 +102,9 @@ def _tick() -> int:
     except ConfigError as exc:
         print(f"tick: config error: {exc}", file=sys.stderr)
         return 2
+    except Exception as exc:  # noqa: BLE001 - any other start-up failure is a config error, never "1"
+        print(f"tick: config error: {type(exc).__name__}", file=sys.stderr)
+        return 2
     return run_tick(app)
 
 
@@ -125,8 +128,14 @@ def _migrate(cfg, runtime_role: str | None) -> int:
         iam_auth=store.iam_auth,
         region=store.region,
         sslmode=store.sslmode,
+        sslrootcert=store.sslrootcert,
     )
     print(f"applied: {', '.join(applied) or 'nothing (up to date)'}")
+    if applied and not runtime_role:
+        print(
+            "warning: new tables have no runtime grants; run again with --runtime-role <role>",
+            file=sys.stderr,
+        )
     return 0
 
 

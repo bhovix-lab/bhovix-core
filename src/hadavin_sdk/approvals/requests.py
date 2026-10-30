@@ -23,6 +23,7 @@ from hadavin_sdk.store.protocol import StaleState, Store
 
 OnDecided = Callable[[str, str, ApprovalDecision | None], object]
 _LOG = logging.getLogger("hadavin_sdk.approvals")
+RESEND_AFTER = timedelta(seconds=60)  # more than 2x a channel call's timeout
 
 
 WARNING = "WARNING: the inputs read like instructions to an AI. Check them before approving. "
@@ -117,15 +118,19 @@ class Approvals:
             return self.store.get_approval_request(req.approval_id)
         return sent
 
-    def resend_unsent(self) -> list[str]:
-        """PENDING requests whose send failed (`sent_at` empty): send them again. Returns approval ids."""
+    def resend_unsent(self, at: datetime | None = None) -> list[str]:
+        """PENDING requests whose send failed (`sent_at` empty) for at least RESEND_AFTER since their step
+        began (a send still in flight is left alone): send them again. Returns approval ids."""
+        at = at or self.clock()
         sent = []
         for req in self.store.list_approvals({"PENDING"}):
-            if (
-                req.sent_at is None
-                and self._send(req, req.steps[req.current_step].approver_ids).sent_at
-            ):
+            step = req.steps[req.current_step]
+            began = req.step_expires_at - timedelta(seconds=step.timeout_s)
+            due = req.sent_at is None and at - began >= RESEND_AFTER
+            if due and self._send(req, step.approver_ids).sent_at:
                 sent.append(req.approval_id)
+        # ponytail: a send that reached Slack but timed out on the reply is sent again (a duplicate message;
+        # both carry the same valid buttons). An idempotency key needs the channel to support one.
         return sent
 
     def decide(self, d: ApprovalDecision, *, record_only: bool = False) -> tuple[bool, str]:
@@ -150,23 +155,28 @@ class Approvals:
         status = "APPROVED" if d.decision == "approve" else "REJECTED"
         new = req.model_copy(update={"status": status})
         try:
-            # The decision row first: one per (approval, step), so of two racing clicks only one is kept,
-            # and an APPROVED request always has its decision. A crash before the status CAS below leaves
-            # the request PENDING (fails safe: the sweep escalates or expires it; nothing runs).
-            self.store.save_approval_decision(d)
-            self.store.update_approval_request(new, "PENDING", req.current_step)
+            # One atomic write: the decision (one per approval step) and the status compare-and-set. Of two
+            # racing clicks, or a click racing the sweep, exactly one is kept, and nothing of the loser.
+            self.store.record_decision(d, new, "PENDING", req.current_step)
         except StaleState:
             return False, "stale"
         self._audit(req, "decide", d.approver_id, decision=d.decision, result=status)
+        if (
+            record_only
+        ):  # the receiver must answer fast: tick reconcile updates the message and runs it
+            return True, status.lower()
+        self.update_message(new)
+        self.on_decided(req.run_id, status, d)
+        return True, status.lower()
+
+    def update_message(self, req: ApprovalRequest) -> None:
+        """Show the outcome in the channel; a failure is logged (the decision is already recorded)."""
         try:
-            self.channel.update(new)
-        except Exception as exc:  # noqa: BLE001 - the decision is recorded; a stale message is cosmetic
+            self.channel.update(req)
+        except Exception as exc:  # noqa: BLE001 - a stale message is cosmetic
             _LOG.warning(
                 "approval %s: channel update failed (%s)", req.approval_id, type(exc).__name__
             )
-        if not record_only:
-            self.on_decided(req.run_id, status, d)
-        return True, status.lower()
 
     def sweep(self, at: datetime | None = None) -> list[str]:
         """Escalate each due request one step; after the last step it expires. Returns approval ids touched."""
@@ -194,11 +204,18 @@ class Approvals:
             if status == "PENDING":
                 self._send(new, req.steps[nxt].approver_ids)
             else:
-                self.channel.update(new)
-                self.channel.notify(
-                    req.requested_by,
-                    f"Approval {req.approval_id} expired with no decision. Nothing was run.",
-                )
-                self.on_decided(req.run_id, "EXPIRED", None)
+                self.update_message(new)
+                try:
+                    self.channel.notify(
+                        req.requested_by,
+                        f"Approval {req.approval_id} expired with no decision. Nothing was run.",
+                    )
+                    self.on_decided(req.run_id, "EXPIRED", None)
+                except Exception as exc:  # noqa: BLE001 - tick reconcile ends the run if this failed
+                    _LOG.warning(
+                        "approval %s: expiry follow-up failed (%s)",
+                        req.approval_id,
+                        type(exc).__name__,
+                    )
             touched.append(req.approval_id)
         return touched

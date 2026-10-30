@@ -21,7 +21,8 @@ class FakeSlack:
                     reply = {"ok": False, "error": fake.fail_with}
                 else:
                     fake._n += 1
-                    reply = {"ok": True, "ts": body.get("ts") or f"1700000000.{fake._n:06d}"}
+                    ts = body.get("ts") or f"1700000000.{fake._n:06d}"
+                    reply = {"ok": True, "channel": body.get("channel"), "ts": ts}
                 out = json.dumps(reply).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")

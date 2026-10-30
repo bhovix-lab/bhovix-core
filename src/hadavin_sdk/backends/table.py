@@ -95,6 +95,9 @@ class LocalDirSettings(KindSettings):
     dir: Path
 
 
+SslMode = Literal["disable", "allow", "prefer", "require", "verify-ca", "verify-full"]
+
+
 class PostgresSettings(KindSettings):
     dsn_secret_name: str
     iam_auth: bool = (
@@ -102,9 +105,8 @@ class PostgresSettings(KindSettings):
     )
     region: str | None = None
     # None: `require` for any non-local host (and always with iam_auth); loopback and sockets keep the DSN's.
-    sslmode: Literal["disable", "allow", "prefer", "require", "verify-ca", "verify-full"] | None = (
-        None
-    )
+    sslmode: SslMode | None = None
+    sslrootcert: str | None = None  # CA bundle path (the RDS bundle); required with iam_auth
 
     @model_validator(mode="after")
     def _iam_needs_region(self) -> PostgresSettings:

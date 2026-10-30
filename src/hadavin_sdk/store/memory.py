@@ -135,6 +135,24 @@ class MemoryStore:
                 raise StaleState(f"{req.approval_id}: {cur.status}/{cur.current_step}")
             self._approvals[req.approval_id] = req.model_copy(deep=True)
 
+    def record_decision(
+        self,
+        decision: ApprovalDecision,
+        req: ApprovalRequest,
+        expected_status: str,
+        expected_step: int,
+    ) -> None:
+        with self._lock:
+            cur = self._approvals.get(req.approval_id)
+            if cur is None:
+                raise NotFound(req.approval_id)
+            key = (decision.approval_id, decision.step)
+            stale = cur.status != expected_status or cur.current_step != expected_step
+            if stale or any((d.approval_id, d.step) == key for d in self._decisions):
+                raise StaleState(f"{req.approval_id}: {cur.status}/{cur.current_step}")
+            self._decisions.append(decision.model_copy(deep=True))
+            self._approvals[req.approval_id] = req.model_copy(deep=True)
+
     def list_due_approvals(self, now: datetime) -> list[ApprovalRequest]:
         with self._lock:
             return [

@@ -108,16 +108,18 @@ class SlackChannel:
                 "unfurl_media": False,
             },
         )
-        return str(reply["ts"])
+        # chat.update needs the channel *id*; the configured value may be a name, so keep Slack's answer.
+        return f"{reply.get('channel') or self.channel_id}|{reply['ts']}"
 
     def update(self, req: ApprovalRequest) -> None:
         if not req.channel_ref:  # never sent: nothing to update
             return
+        channel, _, ts = req.channel_ref.rpartition("|")
         self._call(
             "chat.update",
             {
-                "channel": self.channel_id,
-                "ts": req.channel_ref,
+                "channel": channel or self.channel_id,
+                "ts": ts,
                 "text": f"Approval {req.status.lower()}",
                 "blocks": self._blocks(req, None),
             },

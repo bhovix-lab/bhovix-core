@@ -194,7 +194,9 @@ def test_failed_send_is_resent_by_tick(app):
     _run, req = _waiting(app)
     assert app.store.get_approval_request(req.approval_id).sent_at is None
     channel.send = real
-    assert run_tick(app) == 0
+    assert run_tick(app) == 0  # the first send is still within its window: no resend yet
+    assert app.store.get_approval_request(req.approval_id).sent_at is None
+    assert run_tick(app, now=app.approvals.clock() + timedelta(minutes=2)) == 0
     sent = app.store.get_approval_request(req.approval_id)
     assert sent.sent_at is not None and sent.channel_ref
     assert [s[0] for s in channel.sent] == [req.approval_id]
@@ -305,7 +307,8 @@ def fake_slack():
 def test_slack_send_and_update(app, fake_slack):
     _, req = _waiting(app)
     ch = SlackChannel("C0TEST", TOKEN, SIG, api_base=fake_slack.api_base)
-    ts = ch.send(req, ["slack:U1", "user:a"])
+    ref = ch.send(req, ["slack:U1", "user:a"])
+    assert ref.startswith("C0TEST|")  # the channel id Slack answered with, then the ts
     method, body, auth = fake_slack.calls[-1]
     assert (method, body["channel"], auth) == ("chat.postMessage", "C0TEST", f"Bearer {TOKEN}")
     blocks = body["blocks"]
@@ -315,9 +318,10 @@ def test_slack_send_and_update(app, fake_slack):
     values = [e["value"] for e in blocks[2]["elements"]]
     assert values == [f"{req.approval_id}|{req.plan_hash}|0|{v}" for v in ("approve", "reject")]
     assert "<@U1>" in blocks[1]["elements"][0]["text"]
-    ch.update(req.model_copy(update={"status": "APPROVED", "channel_ref": ts}))
+    ch.update(req.model_copy(update={"status": "APPROVED", "channel_ref": ref}))
     method, body, _ = fake_slack.calls[-1]
-    assert (method, body["ts"]) == ("chat.update", ts) and len(body["blocks"]) == 2  # buttons gone
+    assert (method, body["channel"], body["ts"]) == ("chat.update", "C0TEST", ref.split("|")[1])
+    assert len(body["blocks"]) == 2  # buttons gone
     n = len(fake_slack.calls)
     ch.update(req.model_copy(update={"channel_ref": None}))  # never sent: nothing to update
     assert len(fake_slack.calls) == n
@@ -381,3 +385,118 @@ def test_cli_tick_store_unreachable_exits_3(cfg_dir, monkeypatch):
         lambda settings, deps: FakeSecretProvider({"pg-dsn": closed, "fixture-token": "t"}),
     )
     assert cli.main(["--config", str(cfg_dir), "tick"]) == 3
+
+
+# --- independent review fixes -----------------------------------------------------------------------------
+
+
+def test_a_store_blip_inside_a_step_fails_only_that_step(app, monkeypatch):
+    real, ran = app.store.get_tick_state, []
+
+    def flaky(step):
+        if step == "first":
+            raise OSError("blip")
+        return real(step)
+
+    monkeypatch.setattr(app.store, "get_tick_state", flaky)
+    steps = [
+        TickStep("first", 0, lambda ctx: ran.append(1)),
+        TickStep("second", 0, lambda ctx: ran.append(2)),
+    ]
+    assert run_tick(app, steps=steps) == 1
+    assert ran == [2]
+
+
+def test_driver_errors_keep_their_details_out_of_tick_state(app):
+    import urllib.error
+
+    def boom(ctx):
+        raise urllib.error.URLError("db.internal.example user=app refused")
+
+    assert run_tick(app, steps=[TickStep("net", 0, boom)]) == 1
+    err = app.store.get_tick_state("net").last_error
+    assert err.startswith("URLError") and "db.internal" not in err
+
+
+def test_tick_step_names_are_checked():
+    for bad in ("audit-sweep", "Sweep", "k7_v2", ""):
+        with pytest.raises(ValueError, match="a-z_"):
+            TickStep(bad, 0, lambda ctx: None)
+
+
+def test_one_channel_error_does_not_stop_the_sweep(app):
+    _, a = _waiting(app)
+    channel = app.approvals.channel
+
+    def down(*args):
+        raise ConnectionError("slack down")
+
+    channel.update = down
+    channel.notify = down
+    later = app.approvals.clock() + timedelta(days=30)
+    for _ in a.steps:
+        assert run_tick(app, now=later) == 0
+        later += timedelta(days=30)
+    assert app.store.get_approval_request(a.approval_id).status == "EXPIRED"
+    assert app.store.get_run(a.run_id).state == S.EXPIRED
+
+
+def test_plan_ready_and_orphan_waits_go_to_a_person(app):
+    from hadavin_sdk.models import Run
+
+    old = app.approvals.clock() - timedelta(hours=6)
+    runs = {}
+    for state in (S.PLAN_READY, S.WAITING_FOR_APPROVAL):
+        run = Run(
+            agent_id="test-agent",
+            principal_id="svc:test-agent",
+            trigger_kind="event",
+            trigger_ref="t",
+        )
+        app.store.create_run(run)
+        app.store._runs[run.run_id] = run.model_copy(update={"state": state, "updated_at": old})
+        runs[state] = run.run_id
+    _, asked = _waiting(app)  # a real wait with its request: left alone
+    app.store._runs[asked.run_id] = app.store.get_run(asked.run_id).model_copy(
+        update={"updated_at": old}
+    )
+    assert run_tick(app) == 0
+    assert app.store.get_run(runs[S.PLAN_READY]).reason_code == "interrupted"
+    assert app.store.get_run(runs[S.WAITING_FOR_APPROVAL]).reason_code == "approval_missing"
+    assert app.store.get_run(asked.run_id).state == S.WAITING_FOR_APPROVAL
+
+
+def test_record_only_leaves_the_message_update_to_tick(app):
+    _, req = _waiting(app)
+    channel = app.approvals.channel
+    _record(app, req)
+    assert channel.updates == []  # the receiver answered without calling the channel
+    run_tick(app)
+    assert channel.updates == [(req.approval_id, "APPROVED")]
+
+
+def test_cli_tick_unexpected_start_up_failure_exits_2(cfg_dir, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("credentials expired")
+
+    monkeypatch.setattr("hadavin_sdk.app.build", boom)
+    from hadavin_sdk.config import load_config
+    from hadavin_sdk.registry import load_registry
+
+    qualify(load_registry(load_config(cfg_dir)))
+    assert cli.main(["--config", str(cfg_dir), "tick"]) == 2
+
+
+def test_cli_migrate_warns_when_new_tables_get_no_grants(cfg_dir, monkeypatch, capsys):
+    import yaml
+
+    path = cfg_dir / "config.yaml"
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    data["backends"]["store"] = {"kind": "postgres", "dsn_secret_name": "pg-dsn"}
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    monkeypatch.setenv("HADAVIN_MIGRATE_DSN", "postgresql://unused")
+    monkeypatch.setattr(
+        "hadavin_sdk.store.migrate.migrate", lambda dsn, **kw: ["0003_approvals_tick"]
+    )
+    assert cli.main(["--config", str(cfg_dir), "migrate"]) == 0
+    assert "--runtime-role" in capsys.readouterr().err

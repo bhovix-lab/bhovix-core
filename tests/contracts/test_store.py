@@ -221,3 +221,24 @@ def test_two_threads_racing_one_cas_exactly_one_wins(store):
     for t in threads:
         t.join()
     assert sorted(results) == ["stale", "won"]
+
+
+def test_record_decision_is_atomic(store):
+    req = _request(store)
+    d = ApprovalDecision(
+        approval_id=req.approval_id,
+        plan_hash="h",
+        step=0,
+        decision="reject",
+        approver_id="user:a",
+        channel="fake",
+    )
+    approved = req.model_copy(update={"status": "APPROVED"})
+    with pytest.raises(StaleState):  # the request is not at step 1: nothing is written
+        store.record_decision(d, approved, "PENDING", 1)
+    assert store.get_approval_decision(req.approval_id) is None
+    assert store.get_approval_request(req.approval_id).status == "PENDING"
+    store.record_decision(d, approved, "PENDING", 0)
+    assert store.get_approval_decision(req.approval_id).decision == "reject"
+    with pytest.raises(StaleState):  # a second click on the same step
+        store.record_decision(d, approved, "PENDING", 0)

@@ -40,20 +40,36 @@ PW = "pw" + "-p7"  # built from parts
             "verify-full",
         ),  # the DSN's stronger mode kept
         (REMOTE, "disable", False, "disable"),  # an explicit setting wins (no iam)
-        ("postgresql://app@localhost/core", None, True, "require"),  # iam: always TLS
-        (REMOTE, "verify-ca", True, "verify-ca"),
+        ("postgresql://app@127.0.0.2/core", None, False, None),  # all of 127/8 is loopback
+        ("hostaddr=10.0.0.5 dbname=core", None, False, "require"),  # hostaddr counts as the host
     ],
 )
 def test_tls_mode(dsn, setting, iam, want):
     assert tls_mode(dsn, iam_auth=iam, sslmode=setting) == want
 
 
-@pytest.mark.parametrize("weak", ["disable", "allow", "prefer"])
-def test_iam_refuses_weak_tls(weak):
-    with pytest.raises(ConfigError, match="iam_auth needs TLS"):
-        tls_mode(REMOTE, iam_auth=True, sslmode=weak)
-    with pytest.raises(ConfigError, match="iam_auth needs TLS"):
-        tls_mode(f"{REMOTE}?sslmode={weak}", iam_auth=True)
+def test_pghost_counts_as_the_host(monkeypatch):
+    monkeypatch.setenv("PGHOST", "db.example.internal")
+    assert tls_mode("dbname=core") == "require"
+
+
+def test_iam_verifies_the_server_by_default():
+    ca = "/etc/ssl/rds-bundle.pem"
+    assert tls_mode(REMOTE, iam_auth=True, sslrootcert=ca) == "verify-full"
+    assert (
+        tls_mode("postgresql://app@localhost/core", iam_auth=True, sslrootcert=ca) == "verify-full"
+    )
+    assert tls_mode(REMOTE, iam_auth=True, sslmode="verify-ca", sslrootcert=ca) == "verify-ca"
+    with pytest.raises(ConfigError, match="sslrootcert"):
+        tls_mode(REMOTE, iam_auth=True)
+
+
+@pytest.mark.parametrize("weak", ["disable", "allow", "prefer", "require"])
+def test_iam_refuses_an_unverified_server(weak):
+    with pytest.raises(ConfigError, match="verified server"):
+        tls_mode(REMOTE, iam_auth=True, sslmode=weak, sslrootcert="/ca.pem")
+    with pytest.raises(ConfigError, match="verified server"):
+        tls_mode(f"{REMOTE}?sslmode={weak}", iam_auth=True, sslrootcert="/ca.pem")
 
 
 def test_iam_runtime_dsn_with_a_password_is_refused():

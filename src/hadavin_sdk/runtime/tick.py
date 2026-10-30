@@ -14,6 +14,7 @@ Concurrent ticks are safe: every state change is a compare-and-set, and a loser 
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -41,9 +42,13 @@ class TickContext:
 
 @dataclass(frozen=True)
 class TickStep:
-    name: str  # unique, [a-z_]+
+    name: str  # unique, [a-z_]+ (the tick_state CHECK)
     every_s: int  # 0 = every tick
     fn: Callable[[TickContext], None]
+
+    def __post_init__(self) -> None:
+        if not re.fullmatch(r"[a-z_]+", self.name) or self.every_s < 0:
+            raise ValueError(f"tick step name must be [a-z_]+ and every_s >= 0: {self.name!r}")
 
 
 def _each(items: list[Any], fn: Callable[[Any], None], what: str) -> None:
@@ -65,7 +70,7 @@ def _each(items: list[Any], fn: Callable[[Any], None], what: str) -> None:
 def sweep(ctx: TickContext) -> None:
     """Escalate or expire due approvals; resend requests whose channel send failed."""
     ctx.app.approvals.sweep(ctx.now)
-    ctx.app.approvals.resend_unsent()
+    ctx.app.approvals.resend_unsent(ctx.now)
 
 
 def reconcile(ctx: TickContext) -> None:
@@ -77,6 +82,7 @@ def reconcile(ctx: TickContext) -> None:
     def one(req) -> None:
         if store.get_run(req.run_id).state is not S.WAITING_FOR_APPROVAL:
             return
+        ctx.app.approvals.update_message(req)  # decisions arrive record-only: show the outcome now
         runtime.on_decided(req.run_id, req.status, store.get_approval_decision(req.approval_id))
 
     _each(ended, one, "reconcile")
@@ -97,6 +103,7 @@ def stuck_after_s(app: App, agent_id: str) -> float:
 STUCK = {
     S.RECEIVED: "interrupted",
     S.WORKING: "interrupted",
+    S.PLAN_READY: "interrupted",
     S.EXECUTING: "outcome_unknown",  # never re-executed: a person checks the system
     # ponytail: re-run verify once needs the stored RunResult; until then a person checks.
     S.VERIFYING: "verify_interrupted",
@@ -128,6 +135,35 @@ def stuck(ctx: TickContext) -> None:
 
         _each(candidates, one, f"stuck {state.value}")
 
+    # A crash between WAITING_FOR_APPROVAL and saving the request leaves a wait nobody can answer.
+    waiting = app.store.list_runs(S.WAITING_FOR_APPROVAL, ctx.now - timedelta(seconds=floor))
+    if waiting:
+        asked = {
+            r.run_id
+            for r in app.store.list_approvals({"PENDING", "APPROVED", "REJECTED", "EXPIRED"})
+        }
+        # ponytail: lists every approval; a by-run lookup when the table grows.
+
+        def orphan(run) -> None:
+            if run.run_id in asked:
+                return
+            advance(
+                app.store, run.run_id, S.WAITING_FOR_APPROVAL, S.NEEDS_PERSON, "approval_missing"
+            )
+            app.audit.write_outcome(
+                AuditEvent(
+                    run_id=run.run_id,
+                    domain="run",
+                    operation="state",
+                    principal="system:tick",
+                    source="tick",
+                    result=S.NEEDS_PERSON.value,
+                    error_code="approval_missing",
+                )
+            )
+
+        _each(waiting, orphan, "stuck WAITING_FOR_APPROVAL")
+
 
 def checkpoint(ctx: TickContext) -> None:
     """Sign an audit checkpoint when the audit kind has them (`chain`); others have nothing to do."""
@@ -151,17 +187,23 @@ STEPS: list[TickStep] = [
 HEARTBEAT = TickStep("heartbeat", 0, heartbeat)
 
 
+_DRIVERS = ("psycopg", "urllib", "http", "botocore", "boto3", "socket", "ssl")
+
+
 def _message(exc: Exception) -> str:
+    """Redacted and one line. Driver and network errors carry hosts and users: their type says enough."""
+    if type(exc).__module__.split(".")[0] in _DRIVERS or isinstance(exc, OSError):
+        return "(driver error; details withheld)"
     return redact(str(exc)).text.replace("\n", " ")[:500]
 
 
 def _run_step(ctx: TickContext, step: TickStep) -> str:
     store = ctx.app.store
-    prev = store.get_tick_state(step.name)
-    if step.every_s and prev and (ctx.now - prev.last_run_at).total_seconds() < step.every_s:
-        return SKIPPED
-    error = None
+    prev, error = None, None
     try:
+        prev = store.get_tick_state(step.name)
+        if step.every_s and prev and (ctx.now - prev.last_run_at).total_seconds() < step.every_s:
+            return SKIPPED
         step.fn(ctx)
     except Exception as exc:  # noqa: BLE001 - one step never stops the others
         error = f"{type(exc).__name__}: {_message(exc)}"
