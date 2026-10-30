@@ -1,5 +1,5 @@
 -- Hadavin core store, version 0001. One column per model field (a contract for Portal v0): Decimal ->
--- NUMERIC(18,6), datetime -> TIMESTAMPTZ, dict/list -> JSONB, enums -> TEXT CHECK. Applied only by
+-- NUMERIC (no scale: costs are kept exact, never rounded), datetime -> TIMESTAMPTZ, dict/list -> JSONB, enums -> TEXT CHECK. Applied only by
 -- `hadavin-sdk migrate` under a migration role; the runtime role gets SELECT, INSERT, UPDATE.
 
 CREATE TABLE runs (
@@ -13,7 +13,7 @@ CREATE TABLE runs (
         'RECEIVED', 'WORKING', 'NO_ACTION', 'PLAN_READY', 'NEEDS_PERSON', 'DENIED', 'WAITING_FOR_APPROVAL',
         'EXECUTING', 'REJECTED', 'EXPIRED', 'VERIFYING', 'SUCCEEDED', 'ROLLED_BACK', 'STOPPED')),
     reason_code    TEXT,
-    cost_usd       NUMERIC(18, 6) NOT NULL,
+    cost_usd       NUMERIC NOT NULL,
     created_at     TIMESTAMPTZ NOT NULL,
     updated_at     TIMESTAMPTZ NOT NULL
 );
@@ -87,7 +87,7 @@ CREATE INDEX dead_letters_by_run ON dead_letters (run_id, seq);
 CREATE TABLE spend (
     agent_id TEXT NOT NULL,
     day      DATE NOT NULL,
-    usd      NUMERIC(18, 6) NOT NULL,
+    usd      NUMERIC NOT NULL,
     PRIMARY KEY (agent_id, day)
 );
 

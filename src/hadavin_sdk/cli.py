@@ -38,6 +38,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.config:
         os.environ["HADAVIN_CONFIG_DIR"] = args.config
     cfg = load_config()
+    if args.cmd == "migrate":
+        return _migrate(cfg, args.runtime_role)
     reg = load_registry(cfg)
 
     if args.cmd == "gate":
@@ -52,9 +54,6 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if run.green else 1
 
     b = cfg.backends
-    if args.cmd == "migrate":
-        return _migrate(cfg, args.runtime_role)
-
     if b.store.kind == "memory":
         # The memory store lives inside one running process; a separate CLI process cannot reach it, so
         # claiming "stopped" here would be a lie. Use App.limits.stop() in-process until Postgres arrives.

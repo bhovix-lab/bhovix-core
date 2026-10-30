@@ -50,7 +50,10 @@ def connect(dsn: str, *, iam_auth: bool = False, region: str | None = None) -> p
                 DBUsername=parts["user"],
             )
             extra = {"password": token, "sslmode": "require"}
-    return psycopg.connect(dsn, autocommit=True, connect_timeout=10, **extra)
+    conn = psycopg.connect(dsn, autocommit=True, connect_timeout=10, **extra)
+    # Plan hashes include created_at: datetimes must come back in UTC whatever the server's TimeZone is.
+    conn.execute("SET TIME ZONE 'UTC'")
+    return conn
 
 
 def build(settings, deps) -> PostgresStore:

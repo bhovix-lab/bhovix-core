@@ -21,6 +21,9 @@ from hadavin_sdk.models import (
     Plan,
     Run,
 )
+
+pytest.importorskip("psycopg", reason="needs hadavin-sdk[pg]")
+
 from hadavin_sdk.store.migrate import MIGRATIONS, migrate
 from tests.contracts.kinds.store_postgres import pg_schema
 
@@ -73,6 +76,16 @@ def _use_postgres(cfg_dir):
 def test_migrate_refused_for_memory_store(cfg_dir, capsys):
     assert cli.main(["--config", str(cfg_dir), "migrate"]) == 2
     assert "postgres store" in capsys.readouterr().err
+
+
+def test_migrate_does_not_need_a_valid_registry(cfg_dir, monkeypatch, capsys):
+    _use_postgres(cfg_dir)
+    (cfg_dir / "agents.yaml").write_text("- not: an agent\n", encoding="utf-8")
+    monkeypatch.delenv("HADAVIN_MIGRATE_DSN", raising=False)
+    assert (
+        cli.main(["--config", str(cfg_dir), "migrate"]) == 2
+    )  # reaches the DSN check, not the registry
+    assert "HADAVIN_MIGRATE_DSN" in capsys.readouterr().err
 
 
 def test_migrate_needs_the_migration_dsn(cfg_dir, monkeypatch, capsys):
@@ -129,6 +142,9 @@ def test_runtime_role_can_write_but_not_delete(fresh_dsn):
                 return db.execute(q, (role, priv)).fetchone()[0]
 
             assert can("SELECT") and can("INSERT") and can("UPDATE")
+            schema = db.execute("SELECT current_schema()").fetchone()[0]
+            q = "SELECT has_schema_privilege(%s, %s, 'USAGE')"
+            assert db.execute(q, (role, schema)).fetchone()[0]
             assert not can("DELETE") and not can("TRUNCATE")
     finally:
         with psycopg.connect(fresh_dsn, autocommit=True) as db:

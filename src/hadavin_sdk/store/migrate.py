@@ -57,6 +57,10 @@ def migrate(
             applied.append(path.stem)
         if runtime_role:
             role = sql.Identifier(runtime_role)
+            schema = db.execute("SELECT current_schema()").fetchone()[0]
+            db.execute(
+                sql.SQL("GRANT USAGE ON SCHEMA {} TO {}").format(sql.Identifier(schema), role)
+            )
             for table in TABLES:
                 db.execute(sql.SQL("REVOKE ALL ON {} FROM {}").format(sql.Identifier(table), role))
                 db.execute(

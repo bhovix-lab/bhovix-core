@@ -2,7 +2,7 @@
 
 import threading
 import time
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -148,6 +148,17 @@ def test_spend_day_and_month_totals(store):
     _, month = store.add_spend("a", today - timedelta(days=40), Decimal(5))
     assert month == Decimal(5)
     assert store.spend_totals("a", today) == (Decimal("0.50"), Decimal("0.50"))
+
+
+def test_month_total_spans_days_and_money_is_exact(store):
+    d1, d2 = date(2026, 3, 10), date(2026, 3, 11)
+    store.add_spend("m", d1, Decimal("0.00108225"))
+    day, month = store.add_spend("m", d2, Decimal("0.5"))
+    assert (day, month) == (Decimal("0.5"), Decimal("0.50108225"))
+    assert store.spend_totals("m", d1) == (Decimal("0.00108225"), Decimal("0.50108225"))
+    run = _run(store)
+    store.add_cost(run.run_id, Decimal("0.00108225"))
+    assert store.get_run(run.run_id).cost_usd == Decimal("0.00108225")
 
 
 def test_dead_letters_and_kill_switch(store):
