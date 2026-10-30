@@ -62,7 +62,8 @@ class FakeSystem:
                 if urlsplit(self.path).path != "/records":
                     return self._send(404)
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                if system.redirect_create:  # body read first, so the client sees the 302, not a reset
+                # Body read first, so the client sees the 302, not a connection reset.
+                if system.redirect_create:
                     self.send_response(302)
                     self.send_header("Location", f"http://127.0.0.1:{system.port}/stolen")
                     self.send_header("Content-Length", "0")
