@@ -133,9 +133,8 @@ class VaultSettings(KindSettings):
     secret_id_env: str = "VAULT_SECRET_ID"  # noqa: S105 - auth approle: the variable name
     role: str | None = None  # auth: kubernetes
     jwt_path: Path = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")  # auth: kubernetes
-    auth_mount: str | None = Field(
-        default=None, pattern=r"^[A-Za-z0-9_.-]+$"
-    )  # default: the auth name
+    # Default: the auth name. Nested mounts (e.g. team-a/kubernetes) are allowed.
+    auth_mount: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$")
     ca_cert: Path | None = None
     timeout_s: float = Field(default=10.0, gt=0)
     ttl_s: float = _TTL
@@ -145,8 +144,10 @@ class VaultSettings(KindSettings):
         url = urlsplit(self.address)
         if url.scheme != "https" and not (url.scheme == "http" and url.hostname in _LOOPBACK):
             raise ValueError("address must be https (plain http only to this machine)")
-        if {".", ".."} & {*self.mount.split("/"), *self.path_prefix.split("/")}:
-            raise ValueError("mount and path_prefix may not hold '.' or '..' segments")
+        segments = {*self.mount.split("/"), *self.path_prefix.split("/")}
+        segments |= set((self.auth_mount or "").split("/"))
+        if {".", ".."} & segments:
+            raise ValueError("mount, path_prefix and auth_mount may not hold '.' or '..' segments")
         need = {"token": [], "approle": ["role_id"], "kubernetes": ["role"]}[self.auth]
         if missing := [n for n in need if not getattr(self, n)]:
             raise ValueError(f"auth {self.auth} needs: {', '.join(missing)}")

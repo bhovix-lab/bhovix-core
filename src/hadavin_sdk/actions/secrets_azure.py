@@ -40,5 +40,13 @@ class AzureKeyVaultProvider(CachedSecrets):
 
 
 def build(settings, deps) -> AzureKeyVaultProvider:
-    client = SecretClient(vault_url=settings.vault_url, credential=DefaultAzureCredential())
+    # Bounded: a fetch holds the provider's lock, so a stalled Key Vault must cost seconds, not the SDK's
+    # 300-second defaults and 10 retries.
+    client = SecretClient(
+        vault_url=settings.vault_url,
+        credential=DefaultAzureCredential(),
+        connection_timeout=3,
+        read_timeout=5,
+        retry_total=2,
+    )
     return AzureKeyVaultProvider(client, settings.ttl_s)

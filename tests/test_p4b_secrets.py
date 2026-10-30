@@ -101,6 +101,29 @@ def test_vault_never_follows_a_redirect_with_the_token(vault, monkeypatch):
     assert provider.get("db") == VALUE  # and the proxy variable was ignored
 
 
+def test_vault_odd_response_shapes_are_errors_never_coerced(vault):
+    vault.kv["secret/app/nullv"] = {"value": None}
+    vault.kv["secret/app/listy"] = ["value"]
+    vault.kv["secret/app/num"] = {"value": 7}
+    provider = VaultProvider(vault.address, lambda p: ROOT, path_prefix="app/", ttl_s=0)
+    with pytest.raises(VaultError, match="not JSON"):
+        provider.get("html")
+    with pytest.raises(VaultError, match="unexpected JSON shape"):
+        provider.get("listy")
+    for name in ("nullv", "num"):  # never str(None) == "None"
+        with pytest.raises(ConfigError, match="is not a string"):
+            provider.get(name)
+
+
+def test_vault_nested_auth_mounts_sign_in_and_dot_segments_are_refused(vault, monkeypatch):
+    vault.approle["role-n"] = "sid" + "-n"
+    monkeypatch.setenv("VAULT_SECRET_ID", "sid-n")
+    nested = _settings(vault, auth="approle", role_id="role-n", auth_mount="team-a/approle")
+    assert make("secrets", nested).get("db") == VALUE
+    with pytest.raises(ValueError, match="segments"):
+        _settings(vault, auth="approle", role_id="r", auth_mount="team/../approle")
+
+
 def test_vault_settings_need_tls_and_their_auth_fields(vault):
     remote_http = "http://" + "vault.example:8200"
     for bad in (
@@ -142,6 +165,29 @@ def test_gcp_without_application_default_credentials_is_a_config_error(monkeypat
 
 
 # --- mounted_file -------------------------------------------------------------------------------------
+
+
+def test_azure_client_timeouts_and_retries_are_bounded():
+    provider = make("secrets", AzureKeyVaultSettings(kind="azure_key_vault", vault_url=VAULT_URL))
+    pipeline = (
+        provider._client._client._client._pipeline
+    )  # SecretClient -> generated -> PipelineClient
+    config = pipeline._transport.connection_config
+    retry = next(p for p in pipeline._impl_policies if type(p).__name__ == "RetryPolicy")
+    assert (config.timeout, config.read_timeout, retry.total_retries) == (3, 5, 2)
+
+
+def test_an_unreadable_mounted_file_is_a_config_error(tmp_path, monkeypatch):
+    root = tmp_path / "mounted"
+    root.mkdir()
+    write_secret_file(root, "db", VALUE)
+
+    def denied(*a, **k):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(Path, "read_text", denied)
+    with pytest.raises(ConfigError, match="cannot be read \\(PermissionError\\)"):
+        MountedFileProvider(root).get("db")
 
 
 def test_mounted_files_drop_one_newline_and_refuse_escapes_and_empties(tmp_path):

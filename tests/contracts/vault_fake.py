@@ -73,6 +73,14 @@ class FakeVault:
                     self.send_header("Content-Length", "0")
                     self.end_headers()
                     return None
+                if rest.endswith("/html"):  # a proxy's error page answering 200
+                    page = b"<html>gateway</html>"
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html")
+                    self.send_header("Content-Length", str(len(page)))
+                    self.end_headers()
+                    self.wfile.write(page)
+                    return None
                 fake.reads += 1
                 data = fake.kv.get(f"{mount}/{rest}")
                 if data is None:

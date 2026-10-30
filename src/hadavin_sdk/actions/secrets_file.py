@@ -42,6 +42,10 @@ class MountedFileProvider(CachedSecrets):
             text = path.read_text(encoding="utf-8")
         except FileNotFoundError:
             raise ConfigError(f"secret {name!r} not found in the mounted folder") from None
+        except (OSError, UnicodeDecodeError) as exc:  # e.g. PermissionError: wrong owner or fsGroup
+            raise ConfigError(
+                f"secret {name!r}: the mounted file cannot be read ({type(exc).__name__})"
+            ) from None
         return text.removesuffix("\n").removesuffix("\r")
 
 

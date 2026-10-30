@@ -81,11 +81,17 @@ class VaultProvider(CachedSecrets):
         )
         try:
             with self._opener.open(req, timeout=self.timeout_s) as r:
-                raw = r.read()
-                return r.status, (json.loads(raw) if raw else {})
+                status, raw = r.status, r.read()
         except urllib.error.HTTPError as exc:  # also a refused redirect (3xx)
             exc.close()
             return exc.code, {}
+        try:  # a proxy or load-balancer page can answer 200 with HTML
+            parsed = json.loads(raw) if raw else {}
+        except ValueError:
+            raise VaultError(f"Vault answered {status} with a body that is not JSON") from None
+        if not isinstance(parsed, dict):
+            raise VaultError(f"Vault answered {status} with an unexpected JSON shape")
+        return status, parsed
 
     def _fetch(self, name: str) -> str:
         if not _NAME.fullmatch(name) or name in {
@@ -108,16 +114,27 @@ class VaultProvider(CachedSecrets):
             raise ConfigError(f"secret {name!r} not found in Vault")
         if status != 200:
             raise VaultError(f"secret {name!r}: Vault answered {status}")
-        fields = (body.get("data") or {}).get("data") or {}
+        fields = _mapping(_mapping(body.get("data")).get("data"))
         if self.field not in fields:
             raise ConfigError(f"secret {name!r} has no field {self.field!r} in Vault")
-        return str(fields[self.field])
+        value = fields[self.field]
+        if not isinstance(value, str):  # never str(None) == "None"
+            raise ConfigError(f"secret {name!r}: field {self.field!r} is not a string in Vault")
+        return value
+
+
+def _mapping(value: Any) -> dict:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise VaultError("Vault answered with an unexpected JSON shape")
+    return value
 
 
 def _login_with(provider: VaultProvider, auth_mount: str, payload: dict[str, Any]) -> str:
     status, body = provider.call("POST", f"auth/{auth_mount}/login", payload)
-    token = (body.get("auth") or {}).get("client_token")
-    if status != 200 or not token:
+    token = _mapping(body.get("auth")).get("client_token") if status == 200 else None
+    if not isinstance(token, str) or not token:
         raise ConfigError(f"secrets vault: {auth_mount} sign-in refused ({status})")
     return token
 
