@@ -1,4 +1,4 @@
-"""Evals gate: run an agent's golden set, grade by exact field match, append a green run to qualified.json.
+"""Evals gate: run an agent's golden set, grade by exact field match, append a green run to qualified.jsonl.
 
 An agent with no green run for its current (model id, prompt hash, config hash) cannot start.
 """
@@ -14,6 +14,7 @@ from bhovix_core.models import GateRun
 from bhovix_core.registry import Registry
 
 _ASK = "Process the attached request document."
+QUALIFIED = "qualified.jsonl"
 
 
 def gate(registry: Registry, llm: LLM, agent_id: str) -> GateRun:
@@ -56,9 +57,7 @@ def gate(registry: Registry, llm: LLM, agent_id: str) -> GateRun:
         threshold=cfg.eval_threshold,
         green=n > 0 and rate >= cfg.eval_threshold,
     )
-    if run.green:
-        path = cfg.root / "qualified.json"
-        runs = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
-        runs.append(run.model_dump(mode="json"))
-        path.write_text(json.dumps(runs, indent=2), encoding="utf-8")
+    if run.green:  # append-only log: one green run per line
+        with open(cfg.root / QUALIFIED, "a", encoding="utf-8") as f:
+            f.write(run.model_dump_json() + "\n")
     return run

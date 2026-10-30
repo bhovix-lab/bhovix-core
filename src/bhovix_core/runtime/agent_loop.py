@@ -6,7 +6,6 @@ by the app wiring (``bhovix_core.app``). Approvals are injected the same way.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -41,10 +40,11 @@ class Unqualified(RuntimeError):
 
 
 def qualified_runs(registry: Registry) -> list[GateRun]:
-    path = registry.config.root / "qualified.json"
+    path = registry.config.root / "qualified.jsonl"
     if not path.exists():
         return []
-    return [GateRun(**r) for r in json.loads(path.read_text(encoding="utf-8"))]
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return [GateRun.model_validate_json(line) for line in lines if line.strip()]
 
 
 def assert_qualified(registry: Registry, agent_id: str) -> None:

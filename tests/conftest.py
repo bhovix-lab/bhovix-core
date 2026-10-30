@@ -1,6 +1,5 @@
 """Shared fixtures: every test works on a copy of the fixture config in tmp_path, never the repo."""
 
-import json
 import secrets
 import shutil
 from pathlib import Path
@@ -35,8 +34,8 @@ def qualify(registry, agent_id: str = "test-agent", green: bool = True) -> None:
         threshold=1.0,
         green=green,
     )
-    (registry.config.root / "qualified.json").write_text(
-        json.dumps([run.model_dump(mode="json")]), encoding="utf-8"
+    (registry.config.root / "qualified.jsonl").write_text(
+        run.model_dump_json() + "\n", encoding="utf-8"
     )
 
 
