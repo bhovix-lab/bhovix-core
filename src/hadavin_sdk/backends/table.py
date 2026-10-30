@@ -107,17 +107,28 @@ class LocalDirSettings(KindSettings):
     dir: Path
 
 
+SslMode = Literal["disable", "allow", "prefer", "require", "verify-ca", "verify-full"]
+
+
 class PostgresSettings(KindSettings):
     dsn_secret_name: str
     iam_auth: bool = (
         False  # RDS IAM login: no database password anywhere (needs the `aws` extra too)
     )
     region: str | None = None
+    # None: `verify-full` for any non-local host; loopback and sockets keep the DSN's. Setting a weaker mode
+    # (`require`, `disable`) is an explicit opt-down for dev, refused with iam_auth.
+    sslmode: SslMode | None = None
+    # The server's CA bundle, cloud-neutral: a file path, or a PEM held in any secrets kind.
+    sslrootcert: str | None = None
+    sslrootcert_secret_name: str | None = None
 
     @model_validator(mode="after")
-    def _iam_needs_region(self) -> PostgresSettings:
+    def _checks(self) -> PostgresSettings:
         if self.iam_auth and not self.region:
             raise ValueError("iam_auth needs region (and pip install hadavin-sdk[aws])")
+        if self.sslrootcert and self.sslrootcert_secret_name:
+            raise ValueError("set sslrootcert or sslrootcert_secret_name, not both")
         return self
 
 
@@ -208,6 +219,14 @@ class AwsKmsSettings(KindSettings):
     region: str
 
 
+class SlackSettings(KindSettings):
+    channel_id: str
+    signing_secret_name: str
+    bot_token_secret_name: str
+    api_base: str = "https://slack.com/api"
+    timeout_s: float = Field(default=10.0, gt=0, le=60)
+
+
 class FakeChannelSettings(KindSettings):
     signing_secret_name: str | None = None
 
@@ -291,7 +310,12 @@ TABLE: dict[str, dict[str, Entry]] = {
             GuardrailSettings, "hadavin_sdk.guard.bedrock_guardrail:make", "aws"
         ),
     },
-    "channel": {"fake": Entry(FakeChannelSettings, f"{_BUILTIN}:fake_channel")},
+    "channel": {
+        "fake": Entry(FakeChannelSettings, f"{_BUILTIN}:fake_channel"),
+        "slack": Entry(
+            SlackSettings, "hadavin_sdk.approvals.slack_channel:build", status=_UNVERIFIED
+        ),
+    },
 }
 
 # The Deps fields a factory of each capability may see (besides its own bound `resolve`).

@@ -17,6 +17,16 @@
   field with a default no longer un-qualifies agents, and swapping the llm backend does.
 
 ### Added
+- `hadavin-sdk tick` (slice 2 P7, v5 contract): one pass of isolated steps (`sweep`, `reconcile`, `stuck`,
+  `checkpoint`, then `heartbeat` last); a failing step is logged and recorded in `tick_state` and the others
+  still run. Exit 0 ok, 1 a step failed, 2 config error, 3 store unreachable. Later steps are appended to
+  `runtime.tick.STEPS`.
+- `slack` approval channel (`backends.channel: {kind: slack, channel_id, signing_secret_name,
+  bot_token_secret_name}`) and `approvals/receiver.py`: verified clicks are recorded only; `tick` runs the plan.
+- Migration `0003_approvals_tick.sql`: `approval_requests.sent_at` and `channel_ref` (a failed send is resent
+  by `tick`), one decision per approval step, an exact month spend counter, the kill switch row (a missing row
+  reads as ON), `tick_state`.
+
 - `postgres` store (`pip install hadavin-sdk[pg]`, slice 2 P2): `backends.store: {kind: postgres,
   dsn_secret_name, iam_auth, region}`; compare-and-set in SQL; RDS IAM login with `iam_auth: true`.
 - `hadavin-sdk migrate [--runtime-role R]`: forward-only schema (`store/migrations/0001_core.sql`) applied under
@@ -38,6 +48,14 @@
   (`guardrail_id`, `guardrail_version`, `region`; the PROMPT_ATTACK filter, extra `aws`).
 
 ### Changed
+- Postgres TLS (slice 2 P7): `verify-full` by default for any non-local host, with the server's CA bundle
+  from `sslrootcert` (a file) or `sslrootcert_secret_name` (a PEM in any secrets backend); an explicit weaker
+  `sslmode` is a dev opt-down. With `iam_auth` only `verify-full`/`verify-ca`, and a runtime DSN with a
+  password is refused.
+- The runtime role gets SELECT, INSERT only on `approval_decisions`, `dead_letters`, `gate_decisions`.
+- Gate decisions are written once per run; a run stuck in `RECEIVED` or `PLAN_READY` can go to `NEEDS_PERSON`.
+- Approver ids carry the channel kind's name (`slack:<id>`, `fake:<id>`); request signing is the shared
+  `approvals/hmac_v0.py`, not borrowed from Slack.
 - `ProviderExhausted` from the model ends the run in `NEEDS_PERSON provider_exhausted` instead of escaping.
 - A provider that refuses the request (`ProviderError`, e.g. a bad key) ends the run in
   `NEEDS_PERSON provider_error`; `ProviderExhausted` is now a `ProviderError`.
