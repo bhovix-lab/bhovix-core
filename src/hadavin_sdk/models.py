@@ -226,6 +226,9 @@ class Verdict(Shape):
     score: float = Field(ge=0.0, le=1.0)
     backend: str
     reason_code: str | None = None
+    cost_usd: Decimal = Decimal(
+        0
+    )  # a model-backed detector's call (llm_judge), charged by the caller
 
 
 class RunResult(Shape):

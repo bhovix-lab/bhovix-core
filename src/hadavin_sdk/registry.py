@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from hadavin_sdk.actions.contract import ActionContract, schema_problems
 from hadavin_sdk.config import Config, ConfigError, Money, confined
+from hadavin_sdk.guard.judge import PROMPT_SHA256 as JUDGE_PROMPT_SHA256
 from hadavin_sdk.identity import Principal
 from hadavin_sdk.models import ChainStep, sha256_hex
 
@@ -66,7 +67,13 @@ class Registry:
 
     def golden_sha256(self, agent_id: str) -> str:
         path = self.golden_path(agent_id)
-        return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else ""
+        if not path.is_file():
+            return ""
+        data = path.read_bytes()
+        judge = self.config.golden_dir / "judge.jsonl"
+        if any(d.kind == "llm_judge" for d in self.config.backends.detector) and judge.is_file():
+            data += b"\0" + judge.read_bytes()  # a weakened judge set un-qualifies too
+        return hashlib.sha256(data).hexdigest()
 
     def config_hash(self, agent_id: str) -> str:
         """What the agent was qualified on. `exclude_defaults`: from this version on, adding an optional field
@@ -81,6 +88,17 @@ class Registry:
         def dump(model) -> dict:
             return model.model_dump(mode="json", exclude_defaults=True)
 
+        # An llm_judge screens this agent's input: its prompt, route and threshold are qualified too.
+        judges = [
+            {
+                "prompt_sha256": JUDGE_PROMPT_SHA256,
+                "route": dump(self.config.routes[d.route]),
+                "threshold": str(d.threshold),  # canonical_json refuses floats
+            }
+            for d in self.config.backends.detector
+            if d.kind == "llm_judge"
+        ]
+
         return sha256_hex(
             {
                 "agent": dump(agent),
@@ -93,6 +111,7 @@ class Registry:
                     for k in ("platform", "base_url")
                     if getattr(llm, k, None)
                 },
+                **({"judges": judges} if judges else {}),
             }
         )
 

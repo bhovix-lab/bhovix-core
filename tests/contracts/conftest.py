@@ -59,6 +59,12 @@ def detector(request, tmp_path):
     return KINDS["detector"][request.param](tmp_path)
 
 
+@_kinds("detector_broken")
+def broken_detector(request, tmp_path):
+    """A detector kind whose backend fails (P6; `regex` has no backend to fail)."""
+    return KINDS["detector_broken"][request.param](tmp_path)
+
+
 @_kinds("channel")
 def channel_factory(request, tmp_path):
     return lambda secret: KINDS["channel"][request.param](tmp_path, secret)
