@@ -1,0 +1,28 @@
+{
+  "request_match": {
+    "method": "POST"
+  },
+  "status": 200,
+  "headers": {},
+  "body": {
+    "output": {
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "text": "No action is needed."
+          }
+        ]
+      }
+    },
+    "stopReason": "end_turn",
+    "usage": {
+      "inputTokens": 300,
+      "outputTokens": 7,
+      "totalTokens": 307
+    },
+    "metrics": {
+      "latencyMs": 400
+    }
+  }
+}

@@ -16,8 +16,21 @@
   before starting the runtime; until then start-up raises `Unqualified`. After this one re-gate, adding an optional
   field with a default no longer un-qualifies agents, and swapping the llm backend does.
 
+### Added
+- llm kinds (slice 2 P5, all `slice2-unverified` until the P9 live run): `anthropic` with `platform: api |
+  vertex | foundry` (extra `anthropic`), `bedrock` through Converse (extra `aws`), `openai_compat` (OpenAI,
+  Groq, OpenRouter, a local Ollama) and `gemini` over stdlib HTTP. Each has `call_timeout_s` (60) and
+  `max_attempts` (3): transient failures retry with exponential backoff and jitter, then `ProviderExhausted`.
+  `output_schema` is a forced tool call. Model ids that are moving aliases (`sonnet`, `*-latest`) are refused.
+  The llm `platform` and `base_url` are part of `config_hash`.
+
 ### Changed
 - `ProviderExhausted` from the model ends the run in `NEEDS_PERSON provider_exhausted` instead of escaping.
+- A provider that refuses the request (`ProviderError`, e.g. a bad key) ends the run in
+  `NEEDS_PERSON provider_error`; `ProviderExhausted` is now a `ProviderError`.
+- `Reply.stop_reason` is one of `end_turn`, `tool_use`, `max_tokens`, `refusal` for the network kinds. A reply
+  cut off at the output cap or declined ends the run in `NEEDS_PERSON llm_max_tokens` / `llm_refusal` instead
+  of `NO_ACTION`; a cut-off reply's tool calls are dropped (their input may be incomplete).
 - Store: `get_approval_decision`, `list_approvals`, `list_runs`, `touch`, `spend_totals`; `add_cost` raises
   `NotFound`; `Limits.blocked` no longer writes a zero-spend row.
 - The executor calls a heartbeat before every HTTP attempt, so long retries do not look stuck.

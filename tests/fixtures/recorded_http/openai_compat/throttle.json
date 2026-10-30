@@ -1,0 +1,15 @@
+{
+  "request_match": {
+    "method": "POST",
+    "path_suffix": "/chat/completions"
+  },
+  "status": 429,
+  "headers": {},
+  "body": {
+    "error": {
+      "message": "Rate limit reached",
+      "type": "requests",
+      "code": "rate_limit_exceeded"
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "request_match": {
+    "method": "POST"
+  },
+  "status": 429,
+  "headers": {
+    "retry-after": "1"
+  },
+  "body": {
+    "type": "error",
+    "error": {
+      "type": "rate_limit_error",
+      "message": "Rate limited."
+    }
+  }
+}
