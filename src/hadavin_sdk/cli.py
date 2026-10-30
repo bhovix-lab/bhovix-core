@@ -67,8 +67,12 @@ def main(argv: list[str] | None = None) -> int:
             args.agent,
             k=args.k,
         )
+        # k == 1: today's "passed/n" line. k > 1: the fraction behind pass@1, (item, run) pairs passed / n*k;
+        # the item count passing all k runs is pass^k below.
+        pairs = run.n * run.k
+        frac = f"{run.passed}/{run.n}" if run.k == 1 else f"{round(run.pass_rate * pairs)}/{pairs}"
         print(
-            f"{run.agent_id}: {run.passed}/{run.n} = {run.pass_rate:.2f} "
+            f"{run.agent_id}: {frac} = {run.pass_rate:.2f} "
             f"(threshold {run.threshold:.2f}) -> {'GREEN' if run.green else 'RED'}"
             f", pass^k={_num(run.pass_k)}, abstain={_num(run.abstain_rate)}"
             f", bound={_num(run.upper_error_bound, 3)}"

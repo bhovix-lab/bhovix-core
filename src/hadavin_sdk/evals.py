@@ -34,10 +34,13 @@ def upper_error_bound(x: int, n: int, confidence: float = 0.95) -> float | None:
         return 1.0
     alpha = 1 - confidence
 
-    def cdf(p: float) -> float:  # in log space: comb(n, i) overflows a float above n of about 1030
+    # In log space: comb(n, i) overflows a float above n of about 1030. Computed once, not per bisection step.
+    log_combs = [math.log(math.comb(n, i)) for i in range(x + 1)]
+
+    def cdf(p: float) -> float:
         return sum(
-            math.exp(math.log(math.comb(n, i)) + i * math.log(p) + (n - i) * math.log1p(-p))
-            for i in range(x + 1)
+            math.exp(lc + i * math.log(p) + (n - i) * math.log1p(-p))
+            for i, lc in enumerate(log_combs)
         )
 
     lo, hi = 0.0, 1.0

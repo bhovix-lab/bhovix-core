@@ -171,4 +171,16 @@ def test_cli_line_k1_and_k3(live_cfg_dir, capsys):
         for attempt in (2, 3):
             shutil.copy(first, first.with_name(first.name.replace("-1.json", f"-{attempt}.json")))
     assert cli.main([*argv, "--k", "3"]) == 0
-    assert capsys.readouterr().out.strip() == f"{head}, pass^k=1.00, abstain=0.00, bound=0.259"
+    head3 = "test-agent: 30/30 = 1.00 (threshold 1.00) -> GREEN"  # k > 1: (item, run) pairs
+    assert capsys.readouterr().out.strip() == f"{head3}, pass^k=1.00, abstain=0.00, bound=0.259"
+    # one golden item (the desk lamp) fails one of its three runs
+    second = next(
+        p for p in recorded.glob("*-2.json") if "Desk lamp" in p.read_text(encoding="utf-8")
+    )
+    data = json.loads(second.read_text(encoding="utf-8"))
+    data["tool_calls"][0]["input"]["amount"] = "99.99"
+    second.write_text(json.dumps(data), encoding="utf-8")
+    assert cli.main([*argv, "--k", "3"]) == 1
+    assert capsys.readouterr().out.strip() == (
+        "test-agent: 29/30 = 0.97 (threshold 1.00) -> RED, pass^k=0.90, abstain=0.00, bound=0.394"
+    )
