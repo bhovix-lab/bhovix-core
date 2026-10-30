@@ -1,0 +1,36 @@
+{
+  "request_match": {
+    "method": "POST",
+    "path_suffix": ":generateContent"
+  },
+  "status": 200,
+  "headers": {},
+  "body": {
+    "candidates": [
+      {
+        "index": 0,
+        "finishReason": "STOP",
+        "content": {
+          "role": "model",
+          "parts": [
+            {
+              "functionCall": {
+                "name": "create_draft_record",
+                "args": {
+                  "amount": "249.00",
+                  "title": "Standing desk"
+                }
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "usageMetadata": {
+      "promptTokenCount": 1200,
+      "candidatesTokenCount": 40,
+      "totalTokenCount": 1240
+    },
+    "modelVersion": "contract-model"
+  }
+}

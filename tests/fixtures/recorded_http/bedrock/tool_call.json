@@ -1,0 +1,35 @@
+{
+  "request_match": {
+    "method": "POST"
+  },
+  "status": 200,
+  "headers": {},
+  "body": {
+    "output": {
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "toolUse": {
+              "toolUseId": "tooluse_contract_1",
+              "name": "create_draft_record",
+              "input": {
+                "amount": "249.00",
+                "title": "Standing desk"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "stopReason": "tool_use",
+    "usage": {
+      "inputTokens": 1200,
+      "outputTokens": 40,
+      "totalTokens": 1240
+    },
+    "metrics": {
+      "latencyMs": 900
+    }
+  }
+}

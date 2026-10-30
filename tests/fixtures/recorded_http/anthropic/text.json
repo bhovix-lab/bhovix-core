@@ -1,0 +1,25 @@
+{
+  "request_match": {
+    "method": "POST"
+  },
+  "status": 200,
+  "headers": {},
+  "body": {
+    "id": "msg_contract_2",
+    "type": "message",
+    "role": "assistant",
+    "model": "contract-model",
+    "content": [
+      {
+        "type": "text",
+        "text": "No action is needed."
+      }
+    ],
+    "stop_reason": "end_turn",
+    "stop_sequence": null,
+    "usage": {
+      "input_tokens": 300,
+      "output_tokens": 7
+    }
+  }
+}
