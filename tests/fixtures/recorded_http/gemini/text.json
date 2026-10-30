@@ -1,0 +1,30 @@
+{
+  "request_match": {
+    "method": "POST",
+    "path_suffix": ":generateContent"
+  },
+  "status": 200,
+  "headers": {},
+  "body": {
+    "candidates": [
+      {
+        "index": 0,
+        "finishReason": "STOP",
+        "content": {
+          "role": "model",
+          "parts": [
+            {
+              "text": "No action is needed."
+            }
+          ]
+        }
+      }
+    ],
+    "usageMetadata": {
+      "promptTokenCount": 300,
+      "candidatesTokenCount": 7,
+      "totalTokenCount": 307
+    },
+    "modelVersion": "contract-model"
+  }
+}

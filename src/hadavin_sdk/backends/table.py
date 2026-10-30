@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class KindSettings(BaseModel):
@@ -23,6 +25,66 @@ class KindSettings(BaseModel):
 
 class FakeLLMSettings(KindSettings):
     recorded_dir: Path
+
+
+# A name that becomes part of a host name: letters, digits and dashes only.
+_NAME = r"^[A-Za-z0-9-]+$"
+
+
+class _LLMSettings(KindSettings):
+    call_timeout_s: float = Field(
+        default=60.0, gt=0
+    )  # socket timeout, per operation (not a wall clock)
+    max_attempts: int = Field(default=3, ge=1, le=10)
+
+
+class AnthropicSettings(_LLMSettings):
+    platform: Literal["api", "vertex", "foundry"]
+    api_key_secret_name: str | None = None  # api, foundry
+    project_id: str | None = Field(default=None, pattern=_NAME)  # vertex
+    region: str | None = Field(default=None, pattern=_NAME)  # vertex
+    resource: str | None = Field(
+        default=None, pattern=_NAME
+    )  # foundry: <resource>.services.ai.azure.com
+
+    @model_validator(mode="after")
+    def _platform_fields(self) -> AnthropicSettings:
+        need = {
+            "api": ["api_key_secret_name"],
+            "vertex": ["project_id", "region"],
+            "foundry": ["api_key_secret_name", "resource"],
+        }[self.platform]
+        if missing := [n for n in need if not getattr(self, n)]:
+            raise ValueError(f"platform {self.platform} needs: {', '.join(missing)}")
+        return self
+
+
+class BedrockSettings(_LLMSettings):
+    region: str = Field(pattern=_NAME)
+
+
+_LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+
+
+class OpenAICompatSettings(_LLMSettings):
+    base_url: str
+    api_key_secret_name: str | None = None  # a local Ollama needs none
+    # OpenAI reasoning models refuse `max_tokens` and want `max_completion_tokens`.
+    max_completion_tokens: bool = False
+
+    @model_validator(mode="after")
+    def _https_or_keyless_loopback(self) -> OpenAICompatSettings:
+        url = urlsplit(self.base_url)
+        local = url.scheme == "http" and url.hostname in _LOOPBACK
+        if url.scheme != "https" and not (local and not self.api_key_secret_name):
+            raise ValueError(
+                "base_url must be https (plain http only to this machine, with no key)"
+            )
+        return self
+
+
+class GeminiSettings(_LLMSettings):
+    api_key_secret_name: str
 
 
 class RegexSettings(KindSettings):
@@ -51,7 +113,14 @@ TABLE: dict[str, dict[str, Entry]] = {
     "secrets": {"fake": Entry(KindSettings, f"{_BUILTIN}:fake_secrets")},
     "store": {"memory": Entry(KindSettings, f"{_BUILTIN}:memory_store")},
     "audit": {"local_dir": Entry(LocalDirSettings, f"{_BUILTIN}:local_dir_audit")},
-    "llm": {"fake": Entry(FakeLLMSettings, f"{_BUILTIN}:fake_llm")},
+    "llm": {
+        "fake": Entry(FakeLLMSettings, f"{_BUILTIN}:fake_llm"),
+        # Every kind below is slice2-unverified until its P9 live run (design 12.1).
+        "anthropic": Entry(AnthropicSettings, "hadavin_sdk.llm.anthropic:make", "anthropic"),
+        "bedrock": Entry(BedrockSettings, "hadavin_sdk.llm.bedrock:make", "aws"),
+        "openai_compat": Entry(OpenAICompatSettings, "hadavin_sdk.llm.openai_compat:make"),
+        "gemini": Entry(GeminiSettings, "hadavin_sdk.llm.gemini:make"),
+    },
     "detector": {"regex": Entry(RegexSettings, f"{_BUILTIN}:regex_detector")},
     "channel": {"fake": Entry(FakeChannelSettings, f"{_BUILTIN}:fake_channel")},
 }

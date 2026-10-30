@@ -1,0 +1,15 @@
+{
+  "request_match": {
+    "method": "POST",
+    "path_suffix": ":generateContent"
+  },
+  "status": 429,
+  "headers": {},
+  "body": {
+    "error": {
+      "code": 429,
+      "message": "Resource has been exhausted (e.g. check quota).",
+      "status": "RESOURCE_EXHAUSTED"
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "request_match": {
+    "method": "POST"
+  },
+  "status": 401,
+  "headers": {},
+  "body": {
+    "type": "error",
+    "error": {
+      "type": "authentication_error",
+      "message": "invalid x-api-key"
+    }
+  }
+}

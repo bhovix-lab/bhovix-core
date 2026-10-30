@@ -1,0 +1,13 @@
+{
+  "request_match": {
+    "method": "POST"
+  },
+  "status": 429,
+  "headers": {},
+  "body": {
+    "Error": {
+      "Code": "ThrottlingException",
+      "Message": "Too many requests, please wait."
+    }
+  }
+}

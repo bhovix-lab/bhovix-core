@@ -1,0 +1,39 @@
+{
+  "request_match": {
+    "method": "POST",
+    "path_suffix": "/chat/completions"
+  },
+  "status": 200,
+  "headers": {},
+  "body": {
+    "id": "chatcmpl-contract-1",
+    "object": "chat.completion",
+    "created": 1761800000,
+    "model": "contract-model",
+    "choices": [
+      {
+        "index": 0,
+        "finish_reason": "tool_calls",
+        "message": {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [
+            {
+              "id": "call_contract_1",
+              "type": "function",
+              "function": {
+                "name": "create_draft_record",
+                "arguments": "{\"amount\": \"249.00\", \"title\": \"Standing desk\"}"
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 1200,
+      "completion_tokens": 40,
+      "total_tokens": 1240
+    }
+  }
+}

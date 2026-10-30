@@ -1,0 +1,5 @@
+# gitleaks false positives, by fingerprint (commit:file:rule:line). Each line says why it is not a secret.
+# P5: `"platform": "api", "api_key_secret_name": "a"` read as an "api" key whose value is the setting's name
+# (fixed in the next commit by reordering the keys; the old commit stays in the PR history).
+cfedb7db50ce5880ea4cd3b1790fa7bba488e67a:tests/test_p5_llm.py:generic-api-key:24
+cfedb7db50ce5880ea4cd3b1790fa7bba488e67a:tests/test_p5_llm.py:generic-api-key:32
