@@ -1,12 +1,12 @@
 [project]
-name = "bhovix-core"
+name = "hadavin-sdk"
 version = "0.0.0"
-description = "Shared building blocks for Bhovix Lab's AI builds"
+description = "Shared building blocks for Hadavin's AI builds"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "LicenseRef-Proprietary"
 license-files = ["LICENSE"]
-authors = [{ name = "Bhovix Lab" }]
+authors = [{ name = "Hadavin" }]
 # PyPI refuses any upload carrying this classifier.
 classifiers = ["Private :: Do Not Upload"]
 # Base: typed models, settings and YAML config only. No vendor SDK; each cloud backend is an optional extra added
@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-bhovix-core = "bhovix_core.cli:main"
+hadavin-sdk = "hadavin_sdk.cli:main"
 
 [dependency-groups]
 dev = ["pytest==9.1.1", "ruff==0.17.1"]

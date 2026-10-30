@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from bhovix_core.models import GateRun
+from hadavin_sdk.models import GateRun
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

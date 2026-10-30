@@ -1,7 +1,7 @@
 """Verify and rollback functions for the fixture contracts. ``call`` is the executor's caller: it adds the
 token, so these functions never see the secret."""
 
-from bhovix_core.models import RunResult
+from hadavin_sdk.models import RunResult
 
 
 def verify_record(plan, result, call) -> bool:

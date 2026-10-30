@@ -9,11 +9,11 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 LICENCE_TEXT = (
-    "Copyright (c) 2026 Bhovix Lab. All rights reserved.\n"
+    "Copyright (c) 2026 Hadavin. All rights reserved.\n"
     "\n"
     "This source code is proprietary and confidential. No licence is granted to use, copy,\n"
     "modify, distribute or create derivative works of it, except under a separate written\n"
-    "agreement with Bhovix Lab. Viewing this repository on GitHub does not grant any such licence.\n"
+    "agreement with Hadavin. Viewing this repository on GitHub does not grant any such licence.\n"
 )
 
 
@@ -39,8 +39,8 @@ def licence_problems(root: Path, files: list[str]) -> list[str]:
             project = tomllib.loads(path.read_text(encoding="utf-8")).get("project", {})
             if project.get("license") != "LicenseRef-Proprietary":
                 problems.append(f"{name}: license is not LicenseRef-Proprietary")
-            if project.get("authors") != [{"name": "Bhovix Lab"}]:
-                problems.append(f"{name}: authors is not Bhovix Lab")
+            if project.get("authors") != [{"name": "Hadavin"}]:
+                problems.append(f"{name}: authors is not Hadavin")
     return problems
 
 
@@ -88,14 +88,14 @@ def test_licences_are_proprietary():
 
 
 def test_core_never_imports_demos():
-    assert core_imports_demos(ROOT / "src" / "bhovix_core") == []
+    assert core_imports_demos(ROOT / "src" / "hadavin_sdk") == []
 
 
 def test_every_reversible_contract_names_an_existing_rollback_test():
     assert missing_rollback_tests(ROOT, action_dirs(ROOT)) == []
 
 
-SECRET_HOLDERS = {"bhovix_core.actions.secrets", "bhovix_core.actions.executor"}
+SECRET_HOLDERS = {"hadavin_sdk.actions.secrets", "hadavin_sdk.actions.executor"}
 
 
 def secret_imports(pkg_dirs: list[Path]) -> list[str]:
@@ -114,13 +114,13 @@ def secret_imports(pkg_dirs: list[Path]) -> list[str]:
 
 
 def test_import_boundary_runtime_approvals_llm_never_see_secrets():
-    core = ROOT / "src" / "bhovix_core"
+    core = ROOT / "src" / "hadavin_sdk"
     assert secret_imports([core / "runtime", core / "approvals", core / "llm"]) == []
 
 
 def test_plant_runtime_importing_executor_is_caught(tmp_path):
-    (tmp_path / "bad.py").write_text("from bhovix_core.actions import executor\n", encoding="utf-8")
-    assert secret_imports([tmp_path]) == ["bad.py: bhovix_core.actions.executor"]
+    (tmp_path / "bad.py").write_text("from hadavin_sdk.actions import executor\n", encoding="utf-8")
+    assert secret_imports([tmp_path]) == ["bad.py: hadavin_sdk.actions.executor"]
 
 
 def test_plant_missing_rollback_test_is_caught(tmp_path):

@@ -9,17 +9,17 @@ from urllib.parse import urlencode
 import pytest
 import yaml
 
-from bhovix_core import evals
-from bhovix_core.actions.secrets import FakeSecretProvider
-from bhovix_core.app import build, make_llm
-from bhovix_core.approvals import FakeChannel
-from bhovix_core.approvals.requests import WARNING, summary
-from bhovix_core.approvals.slack import verify
-from bhovix_core.config import ConfigError, load_config
-from bhovix_core.guard import RegexDetector
-from bhovix_core.models import GateDecision, RunState
-from bhovix_core.registry import load_registry
-from bhovix_core.runtime.agent_loop import Hooks, Unqualified
+from hadavin_sdk import evals
+from hadavin_sdk.actions.secrets import FakeSecretProvider
+from hadavin_sdk.app import build, make_llm
+from hadavin_sdk.approvals import FakeChannel
+from hadavin_sdk.approvals.requests import WARNING, summary
+from hadavin_sdk.approvals.slack import verify
+from hadavin_sdk.config import ConfigError, load_config
+from hadavin_sdk.guard import RegexDetector
+from hadavin_sdk.models import GateDecision, RunState
+from hadavin_sdk.registry import load_registry
+from hadavin_sdk.runtime.agent_loop import Hooks, Unqualified
 from tests.test_cuj import _approve, _doc, _pending
 from tests.test_executor import _approved, _plan
 from tests.test_s5_runtime import build as build_rt
@@ -98,7 +98,7 @@ def test_path_field_needs_a_pattern(cfg_dir):
 
 def test_path_traversal_id_denied_by_schema(app, fake_system):
     rt = app.runtime
-    from bhovix_core.models import Run, ToolCall
+    from hadavin_sdk.models import Run, ToolCall
 
     run = Run(
         agent_id="test-agent", principal_id="svc:test-agent", trigger_kind="event", trigger_ref="t"
@@ -112,7 +112,7 @@ def test_path_traversal_id_denied_by_schema(app, fake_system):
 # 8: a 5xx/408 on a mutating call is looked up, never reported as a plain failure
 @pytest.mark.parametrize("status", [500, 503, 408])
 def test_server_error_after_create_is_looked_up(live_cfg_dir, fake_system, status):
-    from bhovix_core.actions.executor import Executor
+    from hadavin_sdk.actions.executor import Executor
 
     reg = load_registry(load_config(live_cfg_dir))
     ex = Executor(reg, FakeSecretProvider({"fixture-token": fake_system.token}), timeout_s=0.5)
@@ -125,7 +125,7 @@ def test_server_error_after_create_is_looked_up(live_cfg_dir, fake_system, statu
 
 # 19: decision and plan must belong to the same run
 def test_run_mismatch_refused(live_cfg_dir, fake_system):
-    from bhovix_core.actions.executor import Executor
+    from hadavin_sdk.actions.executor import Executor
 
     reg = load_registry(load_config(live_cfg_dir))
     ex = Executor(reg, FakeSecretProvider({"fixture-token": fake_system.token}))
@@ -176,7 +176,7 @@ def _callback(approval_id, plan_hash, step, user, ts, secret=SECRET):
 
 def test_signed_callback_approves_with_verified_identity(app, fake_system):
     p = app.registry.principals
-    from bhovix_core.identity import Principal
+    from hadavin_sdk.identity import Principal
 
     p["slack:U123"] = Principal(id="slack:U123", kind="person", approver_of=["chain-abc"])
     run = app.runtime.handle("test-agent", "svc:test-agent", _doc(app, "create.txt"))
@@ -216,7 +216,7 @@ def test_summary_warns_on_instruction_like_inputs():
 
 # 21: no verify hook means never "succeeded"
 def test_missing_verify_hook_needs_a_person(cfg_dir):
-    from bhovix_core.models import RunResult
+    from hadavin_sdk.models import RunResult
 
     hooks = Hooks(
         request_approval=lambda *a: None,
@@ -252,7 +252,7 @@ def test_loopback_http_needs_the_explicit_flag(cfg_dir):
 
 
 def test_call_time_https_check(live_cfg_dir, fake_system):
-    from bhovix_core.actions.executor import Executor
+    from hadavin_sdk.actions.executor import Executor
 
     cfg = load_config(live_cfg_dir)
     # bypass load-time validation (model_copy does not validate) to prove the call-time check holds
@@ -265,7 +265,7 @@ def test_call_time_https_check(live_cfg_dir, fake_system):
 
 # verifier (c): a reset that cannot be audited is refused with a clear message; the switch stays on
 def test_kill_switch_reset_refused_when_audit_down(cfg_dir, capsys, monkeypatch):
-    from bhovix_core.cli import kill_switch
+    from hadavin_sdk.cli import kill_switch
 
     rt, _ = build_rt(cfg_dir)
     assert kill_switch(rt.limits, "stop", "user:a") == 0
@@ -281,8 +281,8 @@ def test_kill_switch_reset_refused_when_audit_down(cfg_dir, capsys, monkeypatch)
 
 # CodeRabbit on f33a53f: write_outcome never raises, even on a corrupt index line (ValueError)
 def test_write_outcome_survives_corrupt_index(tmp_path):
-    from bhovix_core.audit import LocalDirSink
-    from bhovix_core.models import AuditEvent
+    from hadavin_sdk.audit import LocalDirSink
+    from hadavin_sdk.models import AuditEvent
 
     sink = LocalDirSink(tmp_path)
     ev = AuditEvent(run_id="r", domain="d", operation="o", principal="p", source="s")
@@ -297,8 +297,8 @@ def test_write_outcome_survives_corrupt_index(tmp_path):
 
 # CodeRabbit on f5ea960: a partial outbox file is quarantined and never blocks reconcile
 def test_corrupt_outbox_file_does_not_block_reconcile(tmp_path, monkeypatch):
-    from bhovix_core.audit import LocalDirSink
-    from bhovix_core.models import AuditEvent
+    from hadavin_sdk.audit import LocalDirSink
+    from hadavin_sdk.models import AuditEvent
 
     sink = LocalDirSink(tmp_path)
     real = sink._write
@@ -315,7 +315,7 @@ def test_corrupt_outbox_file_does_not_block_reconcile(tmp_path, monkeypatch):
 
 # CodeRabbit on f5ea960: directory fsync is best effort and never raises (Windows cannot fsync a folder)
 def test_fsync_dir_never_raises(tmp_path):
-    from bhovix_core.audit import LocalDirSink
+    from hadavin_sdk.audit import LocalDirSink
 
     LocalDirSink._fsync_dir(tmp_path)
     LocalDirSink._fsync_dir(tmp_path / "missing")
@@ -388,6 +388,6 @@ def test_torn_qualified_tail_is_recovered(live_cfg_dir, fake_system):
         and lines[1].startswith('{"agent_id": "test-ag')
         and lines[2].startswith("{")
     )
-    from bhovix_core.runtime.agent_loop import qualified_runs
+    from hadavin_sdk.runtime.agent_loop import qualified_runs
 
     assert len(qualified_runs(reg)) == 2

@@ -6,11 +6,11 @@ from decimal import Decimal
 import pytest
 import yaml
 
-from bhovix_core.config import ConfigError, load_config
-from bhovix_core.models import Plan, Run, RunState, Target, canonical_json, now, sha256_hex
-from bhovix_core.runtime.runs import ALLOWED, FINAL, IllegalTransition, advance
-from bhovix_core.store import MemoryStore, StaleState
-from bhovix_core.store.protocol import NotFound
+from hadavin_sdk.config import ConfigError, load_config
+from hadavin_sdk.models import Plan, Run, RunState, Target, canonical_json, now, sha256_hex
+from hadavin_sdk.runtime.runs import ALLOWED, FINAL, IllegalTransition, advance
+from hadavin_sdk.store import MemoryStore, StaleState
+from hadavin_sdk.store.protocol import NotFound
 
 S = RunState
 
@@ -33,7 +33,7 @@ def test_fixture_config_loads(cfg_dir):
 
 
 def test_config_dir_from_env(cfg_dir, monkeypatch):
-    monkeypatch.setenv("BHOVIX_CONFIG_DIR", str(cfg_dir))
+    monkeypatch.setenv("HADAVIN_CONFIG_DIR", str(cfg_dir))
     assert load_config().root == cfg_dir
 
 

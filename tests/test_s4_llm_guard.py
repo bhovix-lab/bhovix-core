@@ -4,17 +4,17 @@ from decimal import Decimal
 
 import pytest
 
-from bhovix_core.config import load_config
-from bhovix_core.extract import Valid, extract
-from bhovix_core.guard import (
+from hadavin_sdk.config import load_config
+from hadavin_sdk.extract import Valid, extract
+from hadavin_sdk.guard import (
     EgressRefused,
     RegexDetector,
     egress_check,
     injection_check,
     redact,
 )
-from bhovix_core.llm import FakeLLM, UnknownRecording
-from bhovix_core.models import DeadLetter
+from hadavin_sdk.llm import FakeLLM, UnknownRecording
+from hadavin_sdk.models import DeadLetter
 from tests.fixtures.schemas import RecordRequest
 
 

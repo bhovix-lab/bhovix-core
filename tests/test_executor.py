@@ -2,11 +2,11 @@
 
 import pytest
 
-from bhovix_core.actions.executor import Executor
-from bhovix_core.actions.secrets import FakeSecretProvider
-from bhovix_core.config import load_config
-from bhovix_core.models import ApprovalDecision, GateDecision, Plan, RunResult, Target
-from bhovix_core.registry import load_registry
+from hadavin_sdk.actions.executor import Executor
+from hadavin_sdk.actions.secrets import FakeSecretProvider
+from hadavin_sdk.config import load_config
+from hadavin_sdk.models import ApprovalDecision, GateDecision, Plan, RunResult, Target
+from hadavin_sdk.registry import load_registry
 
 
 @pytest.fixture
