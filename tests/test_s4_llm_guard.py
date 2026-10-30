@@ -110,3 +110,24 @@ def test_redact_secret_value_keeps_key():
     text, kinds = redact(f"token={fake_key} and password: hunter22")
     assert fake_key not in text and "hunter22" not in text
     assert "APIKEY" in kinds and "SECRET" in kinds
+
+
+# P0a: the PHONE pattern must not eat ISO dates (WARDEN redaction.py:184 date guard)
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Invoice date 2026-10-30",
+        "Due 2026-11-15 and paid 2026-12-01",
+        "Logged at 2026-10-30T09:15:00Z",
+    ],
+)
+def test_iso_dates_are_not_phone_numbers(text):
+    out, kinds = redact(text)
+    assert out == text
+    assert "PHONE" not in kinds
+
+
+def test_phone_still_masked_next_to_a_date():
+    out, kinds = redact("Call +61 412 345 678 before 2026-10-30")
+    assert "412 345" not in out and "2026-10-30" in out
+    assert "PHONE" in kinds
