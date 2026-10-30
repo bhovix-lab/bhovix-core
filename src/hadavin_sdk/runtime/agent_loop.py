@@ -140,6 +140,14 @@ class Runtime:
     def _note(self, run: Run, domain: str, operation: str, **kw: Any) -> None:
         self.audit.write_outcome(self._event(run, domain, operation, **kw))
 
+    def _screen(self, run: Run, text: str, source: str):
+        """The injection check; a model-backed detector's call (llm_judge) is charged like any model call."""
+        verdict = injection_check(self.detector, text, source)
+        if verdict.cost_usd:
+            self.limits.charge(run.agent_id, verdict.cost_usd)
+            self.store.add_cost(run.run_id, verdict.cost_usd)
+        return verdict
+
     def _to(self, run: Run, new: RunState, reason: str | None = None) -> Run:
         cur = self.store.get_run(run.run_id)
         run = advance(self.store, run.run_id, cur.state, new, reason)
@@ -168,7 +176,7 @@ class Runtime:
         self._note(run, "run", "received", inputs_hash=sha256_hex(document.hex()))
         run = self._to(run, S.WORKING)
 
-        verdict = injection_check(self.detector, document.decode("utf-8", "replace"), "document")
+        verdict = self._screen(run, document.decode("utf-8", "replace"), "document")
         if verdict.flagged:
             self._note(run, "guard", "injection", result="flagged", error_code=verdict.reason_code)
             return self._to(run, S.NEEDS_PERSON, verdict.reason_code)
@@ -225,7 +233,7 @@ class Runtime:
                 except Exception:  # noqa: BLE001 - a broken tool must not strand the run in WORKING
                     self._note(run, "tool", call.name, result="error", error_code="tool_error")
                     return self._to(run, S.NEEDS_PERSON, "tool_error")
-                verdict = injection_check(self.detector, result, f"tool:{call.name}")
+                verdict = self._screen(run, result, f"tool:{call.name}")
                 if verdict.flagged:  # tool output is untrusted text too
                     self._note(
                         run, "guard", "injection", result="flagged", error_code=verdict.reason_code

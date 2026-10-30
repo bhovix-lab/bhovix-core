@@ -1,0 +1,27 @@
+{
+  "request_match": {"method": "POST"},
+  "status": 200,
+  "headers": {},
+  "body": {
+    "usage": {
+      "topicPolicyUnits": 0,
+      "contentPolicyUnits": 1,
+      "wordPolicyUnits": 0,
+      "sensitiveInformationPolicyUnits": 0,
+      "sensitiveInformationPolicyFreeUnits": 0,
+      "contextualGroundingPolicyUnits": 0
+    },
+    "action": "GUARDRAIL_INTERVENED",
+    "outputs": [{"text": "Sorry, this input was blocked."}],
+    "assessments": [
+      {
+        "contentPolicy": {
+          "filters": [
+            {"type": "INSULTS", "confidence": "HIGH", "filterStrength": "HIGH", "action": "BLOCKED", "detected": true},
+            {"type": "PROMPT_ATTACK", "confidence": "NONE", "filterStrength": "HIGH", "action": "NONE", "detected": false}
+          ]
+        }
+      }
+    ]
+  }
+}

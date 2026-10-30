@@ -91,6 +91,18 @@ class RegexSettings(KindSettings):
     threshold: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
+class JudgeSettings(KindSettings):
+    route: str  # a key of `routes`; checked against them at load
+    threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+
+
+class GuardrailSettings(KindSettings):
+    guardrail_id: str
+    guardrail_version: str
+    region: str = Field(pattern=_NAME)
+    threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
 class LocalDirSettings(KindSettings):
     dir: Path
 
@@ -121,7 +133,14 @@ TABLE: dict[str, dict[str, Entry]] = {
         "openai_compat": Entry(OpenAICompatSettings, "hadavin_sdk.llm.openai_compat:make"),
         "gemini": Entry(GeminiSettings, "hadavin_sdk.llm.gemini:make"),
     },
-    "detector": {"regex": Entry(RegexSettings, f"{_BUILTIN}:regex_detector")},
+    "detector": {
+        "regex": Entry(RegexSettings, f"{_BUILTIN}:regex_detector"),
+        # slice2-unverified until the P9 live run (design 12.1).
+        "llm_judge": Entry(JudgeSettings, "hadavin_sdk.guard.judge:make"),
+        "bedrock_guardrail": Entry(
+            GuardrailSettings, "hadavin_sdk.guard.bedrock_guardrail:make", "aws"
+        ),
+    },
     "channel": {"fake": Entry(FakeChannelSettings, f"{_BUILTIN}:fake_channel")},
 }
 

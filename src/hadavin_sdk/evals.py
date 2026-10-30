@@ -10,6 +10,7 @@ import json
 import os
 
 from hadavin_sdk.config import confined
+from hadavin_sdk.guard import judge
 from hadavin_sdk.llm.protocol import LLM
 from hadavin_sdk.models import GateRun
 from hadavin_sdk.registry import Registry
@@ -45,6 +46,15 @@ def gate(registry: Registry, llm: LLM, agent_id: str) -> GateRun:
         )
         passed += got == case["expected"]
     n = len(cases)
+    # An llm_judge is qualified by its own golden set on the same model client (design 4.3).
+    # ponytail: judge.jsonl is not in golden_sha256 yet; add it when a client weakens one in practice.
+    for d in cfg.backends.detector:
+        if d.kind == "llm_judge":
+            ok, total = judge.qualify(
+                judge.JudgeDetector(llm, d.route, d.threshold),
+                confined(cfg.golden_dir, "judge.jsonl"),
+            )
+            passed, n = passed + ok, n + total
     rate = passed / n if n else 0.0
     run = GateRun(
         agent_id=agent_id,

@@ -16,7 +16,7 @@ from hadavin_sdk.approvals import Approvals, Channel
 from hadavin_sdk.audit import AuditSink
 from hadavin_sdk.backends import make, platform_secrets
 from hadavin_sdk.config import Config, load_config
-from hadavin_sdk.guard.injection import Detector
+from hadavin_sdk.guard.injection import Detector, combine
 from hadavin_sdk.limits import Limits
 from hadavin_sdk.models import now
 from hadavin_sdk.registry import Registry, load_registry
@@ -58,7 +58,7 @@ def build(
     store = make("store", b.store, secrets)
     audit = make("audit", b.audit, secrets, store=store)
     llm = make("llm", b.llm, secrets, routes=cfg.routes)
-    detector = detector or make("detector", b.detector[0], secrets, llm=llm)
+    detector = detector or combine([make("detector", d, secrets, llm=llm) for d in b.detector])
     channel = channel or make("channel", b.channel, secrets, store=store)
     limits = Limits(store, audit, reg)
     executor = Executor(reg, secrets, timeout_s=timeout_s)

@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from hadavin_sdk.actions.contract import ActionContract, schema_problems
 from hadavin_sdk.config import Config, ConfigError, Money, confined
+from hadavin_sdk.guard.judge import PROMPT_SHA256 as JUDGE_PROMPT_SHA256
 from hadavin_sdk.identity import Principal
 from hadavin_sdk.models import ChainStep, sha256_hex
 
@@ -81,6 +82,17 @@ class Registry:
         def dump(model) -> dict:
             return model.model_dump(mode="json", exclude_defaults=True)
 
+        # An llm_judge screens this agent's input: its prompt, route and threshold are qualified too.
+        judges = [
+            {
+                "prompt_sha256": JUDGE_PROMPT_SHA256,
+                "route": dump(self.config.routes[d.route]),
+                "threshold": str(d.threshold),  # canonical_json refuses floats
+            }
+            for d in self.config.backends.detector
+            if d.kind == "llm_judge"
+        ]
+
         return sha256_hex(
             {
                 "agent": dump(agent),
@@ -93,6 +105,7 @@ class Registry:
                     for k in ("platform", "base_url")
                     if getattr(llm, k, None)
                 },
+                **({"judges": judges} if judges else {}),
             }
         )
 

@@ -24,6 +24,12 @@
   `output_schema` is a forced tool call. Model ids that are moving aliases (`sonnet`, `*-latest`) are refused.
   The llm `platform` and `base_url` are part of `config_hash`.
 
+- Detector lists (slice 2 P6): `backends.detector` takes any number of entries; every entry runs and any flag
+  flags the run (max score, the flagging names joined by `+`, the first flag's reason). New kinds, both
+  `slice2-unverified`: `llm_judge` (`route`, `threshold` 0.7; a fixed prompt hashed into `config_hash`, its
+  cost charged to the agent, qualified by `golden_dir/judge.jsonl` in the evals gate) and `bedrock_guardrail`
+  (`guardrail_id`, `guardrail_version`, `region`; the PROMPT_ATTACK filter, extra `aws`).
+
 ### Changed
 - `ProviderExhausted` from the model ends the run in `NEEDS_PERSON provider_exhausted` instead of escaping.
 - A provider that refuses the request (`ProviderError`, e.g. a bad key) ends the run in

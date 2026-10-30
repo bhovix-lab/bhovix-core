@@ -116,12 +116,9 @@ def parse_backends(raw: Any, root: Path) -> Backends:
         value = raw.get(cap, DEFAULTS.get(cap))
         if cap == "detector":
             items = value if isinstance(value, list) else [value]
-            if len(items) != 1:
-                # ponytail: list semantics (any flags, max score) arrive with slice 2 P6; one entry until then.
-                raise ConfigError(
-                    "backends.detector: exactly one detector until detector lists (P6)"
-                )
-            built[cap] = (_one(cap, items[0], root),)
+            if not items:  # every entry runs and any flag flags the run (guard.injection.AnyOf)
+                raise ConfigError("backends.detector: list at least one detector")
+            built[cap] = tuple(_one(cap, item, root) for item in items)
         else:
             built[cap] = _one(cap, value, root)
     return Backends(**built)
@@ -163,6 +160,9 @@ class Config(_Strict):
 
     @model_validator(mode="after")
     def _cross_checks(self) -> Config:
+        for d in self.backends.detector:  # llm_judge names a route
+            if getattr(d, "route", None) is not None and d.route not in self.routes:
+                raise ValueError(f"backends.detector {d.kind}: unknown route {d.route!r}")
         for name, system in self.systems.items():
             if not url_allowed(system.base_url, self.allow_insecure_loopback):
                 raise ValueError(
