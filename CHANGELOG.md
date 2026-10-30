@@ -16,6 +16,14 @@
   before starting the runtime; until then start-up raises `Unqualified`. After this one re-gate, adding an optional
   field with a default no longer un-qualifies agents, and swapping the llm backend does.
 
+### Added
+- `postgres` store (`pip install hadavin-sdk[pg]`, slice 2 P2): `backends.store: {kind: postgres,
+  dsn_secret_name, iam_auth, region}`; compare-and-set in SQL; RDS IAM login with `iam_auth: true`.
+- `hadavin-sdk migrate [--runtime-role R]`: forward-only schema (`store/migrations/0001_core.sql`) applied under
+  an advisory lock with the migration role's DSN from `HADAVIN_MIGRATE_DSN`. Rollback = restore the snapshot
+  taken before migrating.
+- `hadavin-sdk limits stop|reset` now works on a shared (postgres) store.
+
 ### Changed
 - `ProviderExhausted` from the model ends the run in `NEEDS_PERSON provider_exhausted` instead of escaping.
 - Store: `get_approval_decision`, `list_approvals`, `list_runs`, `touch`, `spend_totals`; `add_cost` raises

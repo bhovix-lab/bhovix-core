@@ -32,6 +32,20 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # The postgres store's contract suite runs against this throwaway database (no data, no secrets: trust
+    # auth on a container that lives only for this job).
+    services:
+      postgres:
+        image: postgres:17.10@sha256:7958605b474b3d264a969cb3a123d6aa00ad1e1fe9da8a69984dabb704d93317
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -50,7 +64,9 @@ jobs:
       - name: Format
         run: ruff format --check src tests demos
       - name: Tests (no live calls)
-        run: pytest -q -m "not live"
+        env:
+          HADAVIN_TEST_PG_DSN: postgresql://postgres@localhost:5432/postgres
+        run: pytest -q -m "not live" -rs
 
   security:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false

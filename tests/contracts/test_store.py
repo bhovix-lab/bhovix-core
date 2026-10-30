@@ -1,5 +1,6 @@
 """Store suite: the public Store Protocol only, over every registered store kind (P2 adds postgres)."""
 
+import threading
 import time
 from datetime import timedelta
 from decimal import Decimal
@@ -156,3 +157,24 @@ def test_dead_letters_and_kill_switch(store):
     assert store.get_kill_switch().on is False
     store.set_kill_switch(KillSwitch(on=True, by="user:a"))
     assert (store.get_kill_switch().on, store.get_kill_switch().by) == (True, "user:a")
+
+
+def test_two_threads_racing_one_cas_exactly_one_wins(store):
+    run = _run(store)
+    results = []
+    gate = threading.Barrier(2)
+
+    def race():
+        gate.wait()
+        try:
+            store.transition(run.run_id, S.RECEIVED, S.WORKING)
+            results.append("won")
+        except StaleState:
+            results.append("stale")
+
+    threads = [threading.Thread(target=race) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(results) == ["stale", "won"]

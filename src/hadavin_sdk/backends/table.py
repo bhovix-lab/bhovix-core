@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class KindSettings(BaseModel):
@@ -32,6 +32,20 @@ class LocalDirSettings(KindSettings):
     dir: Path
 
 
+class PostgresSettings(KindSettings):
+    dsn_secret_name: str
+    iam_auth: bool = (
+        False  # RDS IAM login: no database password anywhere (needs the `aws` extra too)
+    )
+    region: str | None = None
+
+    @model_validator(mode="after")
+    def _iam_needs_region(self) -> PostgresSettings:
+        if self.iam_auth and not self.region:
+            raise ValueError("iam_auth needs region (and pip install hadavin-sdk[aws])")
+        return self
+
+
 class FakeChannelSettings(KindSettings):
     signing_secret_name: str | None = None
 
@@ -48,7 +62,10 @@ _BUILTIN = "hadavin_sdk.backends.builtin"
 # Build order (design §4.2): each capability may use only what is built before it, as ALLOWED says.
 TABLE: dict[str, dict[str, Entry]] = {
     "secrets": {"fake": Entry(KindSettings, f"{_BUILTIN}:fake_secrets")},
-    "store": {"memory": Entry(KindSettings, f"{_BUILTIN}:memory_store")},
+    "store": {
+        "memory": Entry(KindSettings, f"{_BUILTIN}:memory_store"),
+        "postgres": Entry(PostgresSettings, "hadavin_sdk.store.postgres:build", extra="pg"),
+    },
     "audit": {"local_dir": Entry(LocalDirSettings, f"{_BUILTIN}:local_dir_audit")},
     "llm": {"fake": Entry(FakeLLMSettings, f"{_BUILTIN}:fake_llm")},
     "detector": {"regex": Entry(RegexSettings, f"{_BUILTIN}:regex_detector")},
