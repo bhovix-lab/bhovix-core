@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
+
+from pydantic import ValidationError
 
 from hadavin_sdk.actions.authorizer import authorize
 from hadavin_sdk.audit.protocol import AuditSink, AuditUnavailable
@@ -36,6 +39,7 @@ from hadavin_sdk.runtime.runs import advance
 from hadavin_sdk.store.protocol import Store
 
 S = RunState
+_LOG = logging.getLogger("hadavin_sdk.runtime")
 _ASK = "Process the attached request document."
 
 
@@ -57,12 +61,23 @@ def qualified_runs(registry: Registry) -> list[GateRun]:
     if not path.exists():
         return []
     runs = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
         try:
-            runs.append(GateRun.model_validate_json(line))
+            data = json.loads(line)
         except ValueError:
             # A torn line (disk full mid-append) qualifies nothing, and never blocks the valid lines.
+            _LOG.warning("qualified.jsonl line %d is not valid JSON (torn append): skipped", i)
             continue
+        try:
+            runs.append(GateRun.model_validate(data))
+        except ValidationError as exc:
+            # Whole JSON of the wrong shape is a format mismatch (say a newer line read by an older image
+            # after a rollback): fail closed rather than silently disqualify.
+            raise ConfigError(
+                f"qualified.jsonl line {i}: not a gate run this version reads"
+            ) from exc
     return runs
 
 

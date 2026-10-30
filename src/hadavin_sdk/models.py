@@ -202,6 +202,19 @@ class GateRun(Shape):
     threshold: float
     green: bool
     ts: datetime = Field(default_factory=now)
+    # K1a: defaults keep lines written before pass^k parseable.
+    k: int = 1
+    pass_k: float | None = None  # share of items passing all k runs; None when k == 1
+    abstain_rate: float | None = (
+        None  # (item, run) pairs with no proposal / (n * k), traps included
+    )
+    cost_per_task_usd: Decimal | None = (
+        None  # Decimal, not Money: models.py must not import config.py
+    )
+    baseline_pass_rate: float | None = None  # set by the replay check (K1b)
+    upper_error_bound: float | None = (
+        None  # one-sided 95 % Clopper-Pearson bound on the failure rate
+    )
 
 
 class ToolCall(BaseModel):

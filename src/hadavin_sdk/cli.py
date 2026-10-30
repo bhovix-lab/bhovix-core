@@ -1,6 +1,7 @@
 """hadavin-sdk CLI.
 
-  hadavin-sdk [--config DIR] gate <agent>                exit 0 when green, 1 when below the threshold
+  hadavin-sdk [--config DIR] gate <agent> [--k K]        exit 0 when green, 1 when below the threshold;
+                                                         --k K runs each item K times (pass^k), default 1
   hadavin-sdk [--config DIR] limits stop|reset --by WHO  needs a shared store (postgres); memory: exit 2
   hadavin-sdk [--config DIR] migrate [--runtime-role R]  apply the postgres schema; the migration role's DSN
                                                          comes from the HADAVIN_MIGRATE_DSN environment variable
@@ -25,12 +26,17 @@ from hadavin_sdk.limits import Limits
 from hadavin_sdk.registry import load_registry
 
 
+def _num(x: float | None, places: int = 2) -> str:
+    return "-" if x is None else f"{x:.{places}f}"
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="hadavin-sdk")
     p.add_argument("--config", help="client config folder (overrides HADAVIN_CONFIG_DIR)")
     sub = p.add_subparsers(dest="cmd", required=True)
     g = sub.add_parser("gate", help="run an agent's golden set")
     g.add_argument("agent")
+    g.add_argument("--k", type=int, default=1, help="runs per golden item (pass^k)")
     lim = sub.add_parser("limits", help="kill switch")
     lim.add_argument("action", choices=["stop", "reset"])
     lim.add_argument("--by", required=True)
@@ -49,11 +55,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "gate":
         b = cfg.backends
         run = evals.gate(
-            reg, make("llm", b.llm, make("secrets", b.secrets), routes=cfg.routes), args.agent
+            reg,
+            make("llm", b.llm, make("secrets", b.secrets), routes=cfg.routes),
+            args.agent,
+            k=args.k,
         )
         print(
             f"{run.agent_id}: {run.passed}/{run.n} = {run.pass_rate:.2f} "
             f"(threshold {run.threshold:.2f}) -> {'GREEN' if run.green else 'RED'}"
+            f", pass^k={_num(run.pass_k)}, abstain={_num(run.abstain_rate)}"
+            f", bound={_num(run.upper_error_bound, 3)}"
         )
         return 0 if run.green else 1
 
