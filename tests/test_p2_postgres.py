@@ -20,6 +20,7 @@ from hadavin_sdk.models import (
     KillSwitch,
     Plan,
     Run,
+    TickState,
 )
 
 pytest.importorskip("psycopg", reason="needs hadavin-sdk[pg]")
@@ -35,20 +36,26 @@ TABLES = {
     "approval_decisions": ApprovalDecision,
     "dead_letters": DeadLetter,
     "kill_switch": KillSwitch,
+    "tick_state": TickState,
 }
 EXTRA_COLUMNS = {"approval_decisions": {"seq"}, "dead_letters": {"seq"}, "kill_switch": {"id"}}
 
 
-def _sql_columns(text: str) -> dict[str, set[str]]:
-    out = {}
-    for table, body in re.findall(r"CREATE TABLE (\w+) \((.*?)\n\);", text, re.DOTALL):
-        cols = re.findall(r'^\s+"?(\w+)"?\s+[A-Z]', body, re.MULTILINE)
-        out[table] = {c for c in cols if c != "PRIMARY"}
+def _sql_columns() -> dict[str, set[str]]:
+    """Columns after every migration file, in order (CREATE TABLE and ALTER TABLE ... ADD COLUMN)."""
+    out: dict[str, set[str]] = {}
+    for path in sorted(MIGRATIONS.glob("*.sql")):
+        text = path.read_text(encoding="utf-8")
+        for table, body in re.findall(r"CREATE TABLE (\w+) \((.*?)\n\);", text, re.DOTALL):
+            cols = re.findall(r'^\s+"?(\w+)"?\s+[A-Z]', body, re.MULTILINE)
+            out[table] = {c for c in cols if c != "PRIMARY"}
+        for table, col in re.findall(r"ALTER TABLE (\w+) ADD COLUMN (\w+)", text):
+            out[table].add(col)
     return out
 
 
 def test_schema_has_one_column_per_model_field():
-    cols = _sql_columns((MIGRATIONS / "0001_core.sql").read_text(encoding="utf-8"))
+    cols = _sql_columns()
     for table, model in TABLES.items():
         assert cols[table] == set(model.model_fields) | EXTRA_COLUMNS.get(table, set()), table
 

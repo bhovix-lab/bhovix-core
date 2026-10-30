@@ -7,6 +7,7 @@ the DSN, the login is a 15-minute RDS IAM token and TLS is required.
 
 from __future__ import annotations
 
+import logging
 import threading
 from datetime import date, datetime
 from decimal import Decimal
@@ -15,6 +16,7 @@ from typing import Any
 
 import psycopg
 from psycopg import sql
+from psycopg.conninfo import conninfo_to_dict
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel
@@ -30,26 +32,54 @@ from hadavin_sdk.models import (
     Plan,
     Run,
     RunState,
+    TickState,
     now,
 )
 from hadavin_sdk.store.protocol import NotFound, StaleState
 
+_LOG = logging.getLogger("hadavin_sdk.store")
 
-def connect(dsn: str, *, iam_auth: bool = False, region: str | None = None) -> psycopg.Connection:
-    extra: dict[str, Any] = {}
+
+_STRONG_TLS = frozenset({"require", "verify-ca", "verify-full"})
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+
+def tls_mode(dsn: str, *, iam_auth: bool = False, sslmode: str | None = None) -> str | None:
+    """The sslmode to connect with: the setting, else the DSN's, else `require` for a non-local host.
+    With iam_auth (a bearer token is sent) anything weaker than `require` is refused."""
+    parts = conninfo_to_dict(dsn)
+    mode = sslmode or parts.get("sslmode")
     if iam_auth:
-        from psycopg.conninfo import conninfo_to_dict
+        if mode and mode not in _STRONG_TLS:
+            raise ConfigError(
+                f"store postgres: iam_auth needs TLS (sslmode require or stronger), not {mode}"
+            )
+        return mode or "require"
+    if mode:
+        return mode
+    host = str(parts.get("host") or "")
+    local = not host or host.startswith("/") or all(h in _LOCAL_HOSTS for h in host.split(","))
+    return None if local else "require"
 
+
+def connect(
+    dsn: str, *, iam_auth: bool = False, region: str | None = None, sslmode: str | None = None
+) -> psycopg.Connection:
+    extra: dict[str, Any] = {}
+    if mode := tls_mode(dsn, iam_auth=iam_auth, sslmode=sslmode):
+        extra["sslmode"] = mode
+    if iam_auth:
         parts = conninfo_to_dict(dsn)
-        if not parts.get("password"):
+        if not parts.get(
+            "password"
+        ):  # the migration role may log in with a password; the runtime never
             import boto3  # the `aws` extra; checked when the store is built
 
-            token = boto3.client("rds", region_name=region).generate_db_auth_token(
+            extra["password"] = boto3.client("rds", region_name=region).generate_db_auth_token(
                 DBHostname=parts["host"],
                 Port=int(parts.get("port") or 5432),
                 DBUsername=parts["user"],
             )
-            extra = {"password": token, "sslmode": "require"}
     conn = psycopg.connect(dsn, autocommit=True, connect_timeout=10, **extra)
     # Plan hashes include created_at: datetimes must come back in UTC whatever the server's TimeZone is.
     conn.execute("SET TIME ZONE 'UTC'")
@@ -66,8 +96,14 @@ def build(settings, deps) -> PostgresStore:
                 "store postgres with iam_auth needs: pip install hadavin-sdk[aws]"
             ) from exc
     dsn = deps.resolve(settings.dsn_secret_name)
+    if settings.iam_auth and conninfo_to_dict(dsn).get("password"):
+        raise ConfigError(
+            "store postgres: with iam_auth the DSN must not carry a password (the login is an IAM token)"
+        )
     try:
-        conn = connect(dsn, iam_auth=settings.iam_auth, region=settings.region)
+        conn = connect(
+            dsn, iam_auth=settings.iam_auth, region=settings.region, sslmode=settings.sslmode
+        )
     except psycopg.OperationalError as exc:
         # The class only: driver messages can carry the host and user.
         raise ConfigError(f"store postgres: cannot connect ({exc.__class__.__name__})") from None
@@ -196,7 +232,10 @@ class PostgresStore:
         return self._one(Plan, "plans", "run_id", run_id)
 
     def save_gate_decision(self, decision: GateDecision) -> None:
-        self._insert("gate_decisions", decision, upsert_on="run_id")
+        try:
+            self._insert("gate_decisions", decision)  # append-only: the runtime role has no UPDATE
+        except psycopg.errors.UniqueViolation:
+            raise StaleState(f"gate decision exists: {decision.run_id}") from None
 
     def get_gate_decision(self, run_id: str) -> GateDecision:
         return self._one(GateDecision, "gate_decisions", "run_id", run_id)
@@ -239,7 +278,10 @@ class PostgresStore:
         )
 
     def save_approval_decision(self, decision: ApprovalDecision) -> None:
-        self._insert("approval_decisions", decision)
+        try:
+            self._insert("approval_decisions", decision)
+        except psycopg.errors.UniqueViolation:
+            raise StaleState(f"decision exists: {decision.approval_id}/{decision.step}") from None
 
     def get_approval_decision(self, approval_id: str) -> ApprovalDecision | None:
         found = self._select(
@@ -268,16 +310,21 @@ class PostgresStore:
     def list_dead_letters(self, run_id: str) -> list[DeadLetter]:
         return self._select(DeadLetter, "dead_letters", "run_id = %s", (run_id,), " ORDER BY seq")
 
-    _MONTH = "SELECT COALESCE(SUM(usd), 0) AS m FROM spend WHERE agent_id = %s AND date_trunc('month', day) = date_trunc('month', %s::date)"
-
     def add_spend(self, agent_id: str, day: date, usd: Decimal) -> tuple[Decimal, Decimal]:
+        """Day and month counters, each one atomic upsert, in one transaction: exact under concurrency."""
+        month = day.replace(day=1)
         with self._lock, self._db.transaction():
             d = self._exec(
                 "INSERT INTO spend (agent_id, day, usd) VALUES (%s, %s, %s) "
                 "ON CONFLICT (agent_id, day) DO UPDATE SET usd = spend.usd + EXCLUDED.usd RETURNING usd",
                 (agent_id, day, usd),
             ).fetchone()["usd"]
-            m = self._exec(self._MONTH, (agent_id, day)).fetchone()["m"]
+            m = self._exec(
+                "INSERT INTO spend_month (agent_id, month, usd) VALUES (%s, %s, %s) "
+                "ON CONFLICT (agent_id, month) DO UPDATE SET usd = spend_month.usd + EXCLUDED.usd "
+                "RETURNING usd",
+                (agent_id, month, usd),
+            ).fetchone()["usd"]
         return Decimal(d), Decimal(m)
 
     def spend_totals(self, agent_id: str, day: date) -> tuple[Decimal, Decimal]:
@@ -285,12 +332,20 @@ class PostgresStore:
             d = self._exec(
                 "SELECT usd FROM spend WHERE agent_id = %s AND day = %s", (agent_id, day)
             ).fetchone()
-            m = self._exec(self._MONTH, (agent_id, day)).fetchone()["m"]
-        return (Decimal(d["usd"]) if d else Decimal(0)), Decimal(m)
+            m = self._exec(
+                "SELECT usd FROM spend_month WHERE agent_id = %s AND month = %s",
+                (agent_id, day.replace(day=1)),
+            ).fetchone()
+        return (Decimal(d["usd"]) if d else Decimal(0)), (Decimal(m["usd"]) if m else Decimal(0))
 
     def get_kill_switch(self) -> KillSwitch:
         found = self._select(KillSwitch, "kill_switch", "id = 1", ())
-        return found[0] if found else KillSwitch()
+        if not found:  # migrate seeds the row: its absence means a broken schema, so fail closed
+            _LOG.error(
+                "kill_switch row missing: treating the kill switch as ON; run hadavin-sdk migrate"
+            )
+            return KillSwitch(on=True, by="system:kill_switch_row_missing")
+        return found[0]
 
     def set_kill_switch(self, ks: KillSwitch) -> None:
         row = {"id": 1, **_row(ks)}
@@ -304,3 +359,10 @@ class PostgresStore:
         )
         with self._lock:
             self._exec(query, list(row.values()))
+
+    def get_tick_state(self, step: str) -> TickState | None:
+        found = self._select(TickState, "tick_state", "step = %s", (step,))
+        return found[0] if found else None
+
+    def save_tick_state(self, state: TickState) -> None:
+        self._insert("tick_state", state, upsert_on="step")

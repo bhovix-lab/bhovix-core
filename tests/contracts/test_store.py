@@ -12,9 +12,11 @@ from hadavin_sdk.models import (
     ApprovalRequest,
     ChainStep,
     DeadLetter,
+    GateDecision,
     KillSwitch,
     Run,
     RunState,
+    TickState,
     now,
 )
 from hadavin_sdk.store.protocol import NotFound, StaleState
@@ -114,18 +116,48 @@ def test_due_approvals_are_pending_and_expired(store):
 
 def test_get_approval_decision_returns_latest_or_none(store):
     assert store.get_approval_decision("apr-x") is None
-    for decision in ("reject", "approve"):
-        store.save_approval_decision(
-            ApprovalDecision(
-                approval_id="apr-x",
-                plan_hash="h",
-                step=0,
-                decision=decision,
-                approver_id="user:a",
-                channel="fake",
-            )
+
+    def decision(step, verdict):
+        return ApprovalDecision(
+            approval_id="apr-x",
+            plan_hash="h",
+            step=step,
+            decision=verdict,
+            approver_id="user:a",
+            channel="fake",
         )
+
+    store.save_approval_decision(decision(0, "reject"))
+    store.save_approval_decision(decision(1, "approve"))
     assert store.get_approval_decision("apr-x").decision == "approve"
+    with pytest.raises(StaleState):  # one decision per step: a racing or replayed one is refused
+        store.save_approval_decision(decision(1, "reject"))
+    assert store.get_approval_decision("apr-x").decision == "approve"
+
+
+def test_gate_decision_is_written_once(store):
+    d = GateDecision(run_id="run-g", plan_hash="h", outcome="allow", rule_id="r")
+    store.save_gate_decision(d)
+    with pytest.raises(StaleState):
+        store.save_gate_decision(d.model_copy(update={"outcome": "deny"}))
+    assert store.get_gate_decision("run-g").outcome == "allow"
+
+
+def test_tick_state_round_trip(store):
+    assert store.get_tick_state("sweep") is None
+    at = now()
+    store.save_tick_state(TickState(step="sweep", last_run_at=at, last_error="X: y"))
+    store.save_tick_state(TickState(step="sweep", last_run_at=at, last_ok_at=at))
+    got = store.get_tick_state("sweep")
+    assert (got.last_run_at, got.last_ok_at, got.last_error) == (at, at, None)
+
+
+def test_sent_at_and_channel_ref_round_trip(store):
+    req = _request(store)
+    assert (req.sent_at, req.channel_ref) == (None, None)
+    sent = req.model_copy(update={"sent_at": now(), "channel_ref": "ts-1"})
+    store.update_approval_request(sent, "PENDING", 0)
+    assert store.get_approval_request(req.approval_id).channel_ref == "ts-1"
 
 
 def test_list_approvals_by_status(store):

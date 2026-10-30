@@ -17,6 +17,7 @@ from hadavin_sdk.models import (
     Plan,
     Run,
     RunState,
+    TickState,
     now,
 )
 from hadavin_sdk.store.protocol import NotFound, StaleState
@@ -34,6 +35,7 @@ class MemoryStore:
         self._dead: dict[str, list[DeadLetter]] = defaultdict(list)
         self._spend: dict[tuple[str, date], Decimal] = defaultdict(Decimal)
         self._kill = KillSwitch()
+        self._ticks: dict[str, TickState] = {}
 
     @staticmethod
     def _get(table: dict, key: str):
@@ -106,6 +108,8 @@ class MemoryStore:
 
     def save_gate_decision(self, decision: GateDecision) -> None:
         with self._lock:
+            if decision.run_id in self._gates:
+                raise StaleState(f"gate decision exists: {decision.run_id}")
             self._gates[decision.run_id] = decision.model_copy(deep=True)
 
     def get_gate_decision(self, run_id: str) -> GateDecision:
@@ -141,6 +145,9 @@ class MemoryStore:
 
     def save_approval_decision(self, decision: ApprovalDecision) -> None:
         with self._lock:
+            key = (decision.approval_id, decision.step)
+            if any((d.approval_id, d.step) == key for d in self._decisions):
+                raise StaleState(f"decision exists: {key}")
             self._decisions.append(decision.model_copy(deep=True))
 
     def get_approval_decision(self, approval_id: str) -> ApprovalDecision | None:
@@ -193,3 +200,12 @@ class MemoryStore:
     def set_kill_switch(self, ks: KillSwitch) -> None:
         with self._lock:
             self._kill = ks.model_copy(deep=True)
+
+    def get_tick_state(self, step: str) -> TickState | None:
+        with self._lock:
+            state = self._ticks.get(step)
+            return state.model_copy() if state else None
+
+    def save_tick_state(self, state: TickState) -> None:
+        with self._lock:
+            self._ticks[state.step] = state.model_copy()

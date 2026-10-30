@@ -85,7 +85,13 @@ def _migrate(cfg, runtime_role: str | None) -> int:
         return 2
     from hadavin_sdk.store.migrate import migrate
 
-    applied = migrate(dsn, runtime_role=runtime_role, iam_auth=store.iam_auth, region=store.region)
+    applied = migrate(
+        dsn,
+        runtime_role=runtime_role,
+        iam_auth=store.iam_auth,
+        region=store.region,
+        sslmode=store.sslmode,
+    )
     print(f"applied: {', '.join(applied) or 'nothing (up to date)'}")
     return 0
 

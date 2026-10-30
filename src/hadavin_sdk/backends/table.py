@@ -101,6 +101,10 @@ class PostgresSettings(KindSettings):
         False  # RDS IAM login: no database password anywhere (needs the `aws` extra too)
     )
     region: str | None = None
+    # None: `require` for any non-local host (and always with iam_auth); loopback and sockets keep the DSN's.
+    sslmode: Literal["disable", "allow", "prefer", "require", "verify-ca", "verify-full"] | None = (
+        None
+    )
 
     @model_validator(mode="after")
     def _iam_needs_region(self) -> PostgresSettings:

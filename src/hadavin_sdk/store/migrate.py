@@ -24,8 +24,12 @@ TABLES = (
     "approval_decisions",
     "dead_letters",
     "spend",
+    "spend_month",
     "kill_switch",
+    "tick_state",
 )
+# Written once, never changed: the runtime role gets SELECT, INSERT only (no UPDATE).
+APPEND_ONLY = frozenset({"approval_decisions", "dead_letters", "gate_decisions"})
 _LOCK = int.from_bytes(b"hadvnmig", "big") >> 1  # one fixed key for every migrate run
 _ROLE = re.compile(r"[a-z_][a-z0-9_]{0,62}")
 
@@ -36,13 +40,15 @@ def migrate(
     runtime_role: str | None = None,
     iam_auth: bool = False,
     region: str | None = None,
+    sslmode: str | None = None,
 ) -> list[str]:
     """Apply pending migrations; return the versions applied by this call. With `runtime_role`, grant it
-    SELECT, INSERT, UPDATE on the core tables (and the sequences behind their ids), nothing else."""
+    SELECT, INSERT (and UPDATE where rows change) on the core tables and USAGE on the id sequences, nothing
+    else; never DELETE or TRUNCATE."""
     if runtime_role is not None and not _ROLE.fullmatch(runtime_role):
         raise ConfigError(f"not a plain database role name: {runtime_role!r}")
     applied = []
-    with connect(dsn, iam_auth=iam_auth, region=region) as db, db.transaction():
+    with connect(dsn, iam_auth=iam_auth, region=region, sslmode=sslmode) as db, db.transaction():
         db.execute("SELECT pg_advisory_xact_lock(%s)", (_LOCK,))
         db.execute(
             "CREATE TABLE IF NOT EXISTS schema_migrations "
@@ -63,9 +69,10 @@ def migrate(
             )
             for table in TABLES:
                 db.execute(sql.SQL("REVOKE ALL ON {} FROM {}").format(sql.Identifier(table), role))
+                privileges = "SELECT, INSERT" if table in APPEND_ONLY else "SELECT, INSERT, UPDATE"
                 db.execute(
-                    sql.SQL("GRANT SELECT, INSERT, UPDATE ON {} TO {}").format(
-                        sql.Identifier(table), role
+                    sql.SQL("GRANT {} ON {} TO {}").format(
+                        sql.SQL(privileges), sql.Identifier(table), role
                     )
                 )
             for seq in ("approval_decisions_seq_seq", "dead_letters_seq_seq"):
