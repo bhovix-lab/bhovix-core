@@ -8,6 +8,7 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Literal
+from urllib.parse import urlsplit
 
 import yaml
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
@@ -53,8 +54,19 @@ class Backends(_Strict):
         return {self.llm, self.store, self.audit, self.channel, self.detector}
 
 
+_LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+
+
 class System(_Strict):
-    base_url: str = Field(pattern=r"^https?://")
+    base_url: str
+
+    @model_validator(mode="after")
+    def _https_unless_loopback(self) -> System:
+        """The bearer token travels with every call: plain http only to this machine (local fakes)."""
+        url = urlsplit(self.base_url)
+        if url.scheme == "https" or (url.scheme == "http" and url.hostname in _LOOPBACK):
+            return self
+        raise ValueError(f"base_url must be https (http only for loopback): {self.base_url}")
 
 
 class SlackConfig(_Strict):
@@ -99,8 +111,10 @@ class Config(_Strict):
 def _read_yaml(path: Path) -> dict:
     if not path.exists():
         return {}
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    return data or {}
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict):
+        raise ConfigError(f"{path.name}: expected a mapping at the top level")
+    return data
 
 
 def confined(base: Path, relative: str) -> Path:
@@ -113,13 +127,16 @@ def confined(base: Path, relative: str) -> Path:
 
 
 def load_config(config_dir: Path | None = None) -> Config:
-    root = Path(config_dir) if config_dir else Settings().config_dir  # type: ignore[call-arg]
-    raw = _read_yaml(root / "config.yaml")
-    egress = _read_yaml(root / "egress.yaml").get("hosts", [])
-    for key in ("audit_dir", "recorded_dir", "golden_dir", "inputs_dir"):
-        if key in raw:
-            raw[key] = root / raw[key]
+    """Every start-up problem (missing BHOVIX_CONFIG_DIR, bad YAML, bad values) is a ConfigError."""
     try:
+        root = Path(config_dir) if config_dir else Settings().config_dir  # type: ignore[call-arg]
+        raw = _read_yaml(root / "config.yaml")
+        egress = _read_yaml(root / "egress.yaml").get("hosts") or []
+        for key in ("audit_dir", "recorded_dir", "golden_dir", "inputs_dir"):
+            if key in raw:
+                raw[key] = root / raw[key]
         return Config(**raw, egress_hosts=frozenset(egress), root=root)
-    except (ValueError, TypeError) as exc:
+    except ConfigError:
+        raise
+    except (ValueError, TypeError, yaml.YAMLError) as exc:  # pydantic errors are ValueErrors
         raise ConfigError(str(exc)) from exc

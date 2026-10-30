@@ -29,21 +29,23 @@ class Limits:
             reasons.append("monthly_budget")
         return reasons
 
-    def _set(self, on: bool, by: str, operation: str) -> None:
-        self.audit.write_intent(
-            AuditEvent(
-                run_id="-",
-                domain="limits",
-                operation=operation,
-                principal=by,
-                source="cli",
-                result="on" if on else "off",
-            )
+    @staticmethod
+    def _event(on: bool, by: str, operation: str) -> AuditEvent:
+        return AuditEvent(
+            run_id="-",
+            domain="limits",
+            operation=operation,
+            principal=by,
+            source="cli",
+            result="on" if on else "off",
         )
-        self.store.set_kill_switch(KillSwitch(on=on, by=by))
 
     def stop(self, by: str) -> None:
-        self._set(True, by, "stop")
+        """An emergency stop must work when the audit store is down: switch first, then audit (outbox)."""
+        self.store.set_kill_switch(KillSwitch(on=True, by=by))
+        self.audit.write_outcome(self._event(True, by, "stop"))
 
     def reset(self, by: str) -> None:
-        self._set(False, by, "reset")
+        """Removing a safety control is audited first; if that fails, the switch stays on."""
+        self.audit.write_intent(self._event(False, by, "reset"))
+        self.store.set_kill_switch(KillSwitch(on=False, by=by))

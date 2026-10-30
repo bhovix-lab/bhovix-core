@@ -1,17 +1,19 @@
 """Executor: the only component that holds a client-system secret and performs an action.
 
-It re-checks the plan hash, calls with the idempotency key, and after a timeout looks the result up instead of
-retrying blindly. It never writes run state; it returns a ``RunResult``.
+It re-checks the plan hash, calls with the idempotency key, and after a timeout or a dropped connection looks the
+result up instead of retrying blindly. It never writes run state; it returns a ``RunResult``.
 """
 
 from __future__ import annotations
 
+import http.client
 import importlib
 import json
 import urllib.error
 import urllib.request
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import quote
 
 from bhovix_core.actions.contract import ActionContract
 from bhovix_core.actions.secrets import SecretProvider
@@ -22,11 +24,28 @@ from bhovix_core.registry import Registry
 Call = Callable[..., tuple[int, Any]]
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect would carry the bearer token to a host egress_check never saw: refuse every redirect."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def resolve(ref: str, allowed: list[str]) -> Callable[..., Any]:
     module, _, name = ref.partition(":")
     if module not in allowed:
         raise PermissionError(f"{ref} is outside check_modules")
     return getattr(importlib.import_module(module), name)
+
+
+def _json(raw: bytes) -> Any:
+    try:
+        return json.loads(raw) if raw else None
+    except ValueError:
+        return None
 
 
 class Executor:
@@ -52,10 +71,9 @@ class Executor:
             for k, v in (headers or {}).items():
                 req.add_header(k, v)
             try:
-                # Scheme limited to http/https above and host allow-listed by egress_check.
-                with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:  # noqa: S310  # nosec B310
-                    raw = resp.read()
-                    return resp.status, json.loads(raw) if raw else None
+                # Scheme limited to http/https above, host allow-listed, redirects refused.
+                with _OPENER.open(req, timeout=self.timeout_s) as resp:  # nosec B310
+                    return resp.status, _json(resp.read())
             except urllib.error.HTTPError as exc:
                 return exc.code, None
 
@@ -63,8 +81,10 @@ class Executor:
 
     @staticmethod
     def _path(template: str, inputs: dict, key: str) -> tuple[str, str]:
+        """Every substituted value is percent-encoded, so ``../x`` or ``1?force=true`` stays one segment."""
         method, _, path = template.partition(" ")
-        return method, path.format(key=key, **inputs)
+        enc = {k: quote(str(v), safe="") for k, v in inputs.items()}
+        return method, path.format(key=quote(key, safe=""), **enc)
 
     def execute(
         self, plan: Plan, decision: GateDecision, approval: ApprovalDecision | None = None
@@ -88,18 +108,23 @@ class Executor:
             )
         except EgressRefused:
             return RunResult(outcome="failed", error_code="egress_refused")
-        except (TimeoutError, urllib.error.URLError) as exc:
-            if isinstance(exc, urllib.error.URLError) and not isinstance(exc.reason, TimeoutError):
-                # Refused before anything was sent is still "unknown": we cannot prove nothing happened.
+        except urllib.error.URLError as exc:
+            if not isinstance(exc.reason, TimeoutError):
+                # Could not connect: nothing provably happened, so the outcome is unknown, not failed.
                 return RunResult(outcome="unknown", error_code="system_unreachable")
             return self._lookup(contract, plan, call)
+        except (TimeoutError, ConnectionError, http.client.HTTPException):
+            # The request may have been applied (timeout, reset, cut-off reply): look it up.
+            return self._lookup(contract, plan, call)
         if 200 <= status < 300:
-            ref = (data or {}).get("id") if isinstance(data, dict) else None
+            ref = data.get("id") if isinstance(data, dict) else None
+            if ref is None and contract.executor.lookup_operation:
+                return self._lookup(contract, plan, call)
             return RunResult(outcome="succeeded", external_ref=ref or plan.target.ref)
         return RunResult(outcome="failed", error_code=f"http_{status}", retryable=status >= 500)
 
     def _lookup(self, contract: ActionContract, plan: Plan, call: Call) -> RunResult:
-        """After a timeout: find the result by idempotency key. Never retry blindly."""
+        """Find the result by idempotency key. Never retry blindly."""
         if not contract.executor.lookup_operation:
             return RunResult(outcome="unknown", error_code="timeout_no_lookup")
         method, path = self._path(
@@ -107,7 +132,7 @@ class Executor:
         )
         try:
             status, data = call(method, path)
-        except (TimeoutError, OSError):
+        except (OSError, http.client.HTTPException):
             return RunResult(outcome="unknown", error_code="lookup_failed")
         if status == 200 and isinstance(data, dict) and data.get("id"):
             return RunResult(outcome="succeeded", external_ref=data["id"])

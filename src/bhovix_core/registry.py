@@ -12,7 +12,7 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from bhovix_core.actions.contract import ActionContract
+from bhovix_core.actions.contract import ActionContract, schema_problems
 from bhovix_core.config import Config, ConfigError, Money, confined
 from bhovix_core.identity import Principal
 from bhovix_core.models import ChainStep, sha256_hex
@@ -81,17 +81,31 @@ def _yaml(path) -> object:
     return yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else None
 
 
+def _by_id(items: list, model: type, where: str) -> dict:
+    """Validated entries keyed by id; a duplicate id fails (a later entry must never shadow an earlier one)."""
+    out: dict = {}
+    for raw in items or []:
+        obj = model(**raw) if isinstance(raw, dict) else model(raw)
+        if obj.id in out:
+            raise ConfigError(f"{where}: duplicate id {obj.id}")
+        out[obj.id] = obj
+    return out
+
+
 def load_registry(config: Config) -> Registry:
     root = config.root
     try:
-        agents = {a["id"]: AgentRecord(**a) for a in (_yaml(root / "agents.yaml") or [])}
-        principals = {p["id"]: Principal(**p) for p in (_yaml(root / "principals.yaml") or [])}
-        chains = {c["id"]: Chain(**c) for c in (_yaml(root / "chains.yaml") or [])}
-        contracts = {}
-        for path in sorted((root / "actions").glob("*.yaml")):
-            c = ActionContract(**_yaml(path))
-            contracts[c.id] = c
-    except (ValidationError, TypeError) as exc:
+        agents = _by_id(_yaml(root / "agents.yaml"), AgentRecord, "agents.yaml")
+        principals = _by_id(_yaml(root / "principals.yaml"), Principal, "principals.yaml")
+        chains = _by_id(_yaml(root / "chains.yaml"), Chain, "chains.yaml")
+        contracts = _by_id(
+            [_yaml(p) for p in sorted((root / "actions").glob("*.yaml"))],
+            ActionContract,
+            "actions/",
+        )
+    except ConfigError:
+        raise
+    except (ValidationError, TypeError, yaml.YAMLError) as exc:
         raise ConfigError(str(exc)) from exc
     problems = _cross_check(config, agents, chains, contracts)
     if problems:
@@ -117,6 +131,7 @@ def _cross_check(config, agents, chains, contracts) -> list[str]:
             if not s.approver_ids or s.timeout_s <= 0:
                 out.append(f"chain {c.id} step {i}: needs approvers and timeout_s > 0")
     for c in contracts.values():
+        out += [f"action {c.id}: {p}" for p in schema_problems(c.input_schema)]
         if c.chain_id not in chains:
             out.append(f"action {c.id}: unknown chain {c.chain_id}")
         for ref in filter(None, [c.verify_check, c.rollback]):

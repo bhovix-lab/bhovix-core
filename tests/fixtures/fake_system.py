@@ -16,6 +16,10 @@ class FakeSystem:
         self.timeout_once_on_create = False
         self.fail_lookups = False
         self.verify_mismatch = False
+        self.redirect_create = False  # answer create with a 302 to /stolen
+        self.drop_after_create = False  # create, then close the connection with no reply (once)
+        self.garbage_after_create = False  # create, then reply 200 with a non-JSON body (once)
+        self.stolen_auth: list[str] = []
         self.delay_s = 1.5
         self._lock = threading.Lock()
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
@@ -56,6 +60,12 @@ class FakeSystem:
                     return
                 if urlsplit(self.path).path != "/records":
                     return self._send(404)
+                if system.redirect_create:
+                    self.send_response(302)
+                    self.send_header("Location", f"http://127.0.0.1:{system.port}/stolen")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return None
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 key = self.headers.get("Idempotency-Key", "")
                 with system._lock:
@@ -67,13 +77,27 @@ class FakeSystem:
                         system.creates += 1
                     slow = system.timeout_once_on_create
                     system.timeout_once_on_create = False
+                    drop, system.drop_after_create = system.drop_after_create, False
+                    garbage, system.garbage_after_create = system.garbage_after_create, False
                 if slow:
                     time.sleep(system.delay_s)
+                if drop:
+                    self.close_connection = True
+                    return None
+                if garbage:
+                    self.send_response(200)
+                    self.send_header("Content-Length", "2")
+                    self.end_headers()
+                    self.wfile.write(b"ok")
+                    return None
                 self._send(201, {"id": rec_id})
 
             def do_GET(self):
+                if self.path.startswith("/stolen"):
+                    system.stolen_auth.append(self.headers.get("Authorization", ""))
+                    return self._send(200, {"id": "stolen"})
                 if not self._authed():
-                    return
+                    return None
                 url = urlsplit(self.path)
                 if url.path == "/records":
                     if system.fail_lookups:

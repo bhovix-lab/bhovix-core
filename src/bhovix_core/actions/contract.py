@@ -51,6 +51,33 @@ def effective_class(contract: ActionContract, data_class: str) -> RiskClass:
 
 
 _TYPES = {"string": str, "integer": int, "boolean": bool, "object": dict, "array": list}
+_KEYWORDS = {
+    "type",
+    "enum",
+    "maxLength",
+    "minLength",
+    "pattern",
+    "properties",
+    "required",
+    "additionalProperties",
+}
+
+
+def schema_problems(schema: Any, where: str = "input_schema") -> list[str]:
+    """Load-time check: only the subset ``schema_errors`` understands, so a contract can't crash the gate."""
+    if not isinstance(schema, dict):
+        return [f"{where}: must be a mapping"]
+    out = [f"{where}: unsupported keyword {k}" for k in schema if k not in _KEYWORDS]
+    if "type" in schema and schema["type"] not in _TYPES:
+        out.append(f"{where}: unsupported type {schema['type']!r} (use string for numbers)")
+    if "pattern" in schema:
+        try:
+            re.compile(schema["pattern"])
+        except (re.error, TypeError):
+            out.append(f"{where}: bad pattern")
+    for k, sub in (schema.get("properties") or {}).items():
+        out += schema_problems(sub, f"{where}.{k}")
+    return out
 
 
 def schema_errors(schema: dict[str, Any], value: Any) -> list[str]:

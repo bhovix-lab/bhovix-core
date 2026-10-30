@@ -82,6 +82,8 @@ class Approvals:
             reason = "not_pending"
         elif d.step != req.current_step:
             reason = "old_step"
+        elif self.clock() >= req.step_expires_at:
+            reason = "step_expired"  # the sweep escalates it; a late decision never runs the plan
         elif d.approver_id not in req.steps[req.current_step].approver_ids:
             reason = "not_an_approver_for_this_step"
         elif d.approver_id == req.requested_by:

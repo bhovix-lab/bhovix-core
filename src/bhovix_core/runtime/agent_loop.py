@@ -183,7 +183,11 @@ class Runtime:
     def _submit(self, run: Run, call: ToolCall) -> Run:
         agent = self.registry.agents[run.agent_id]
         contract = self.registry.contracts[call.name]
-        plan = build_plan(run, agent, contract, call)
+        try:  # model output: a float or a non-string id must not strand the run
+            plan = build_plan(run, agent, contract, call)
+            plan.hash()
+        except ValueError:  # includes pydantic ValidationError and the float refusal
+            return self._to(run, S.NEEDS_PERSON, "invalid_proposal")
         self.store.save_plan(plan)
         run = self._to(run, S.PLAN_READY)
         principal = self.registry.principals[run.principal_id]
@@ -235,7 +239,10 @@ class Runtime:
         except AuditUnavailable:
             return self._to(run, S.NEEDS_PERSON, "audit_unavailable")
         run = self._to(run, S.EXECUTING)
-        result = self.hooks.execute(plan, decision, approval)
+        try:
+            result = self.hooks.execute(plan, decision, approval)
+        except Exception:  # noqa: BLE001 - the side effect may have happened: never leave EXECUTING
+            result = RunResult(outcome="unknown", error_code="executor_error")
         self._note(
             run,
             "action",
@@ -247,10 +254,18 @@ class Runtime:
         if result.outcome != "succeeded":
             return self._to(run, S.NEEDS_PERSON, result.error_code or f"outcome_{result.outcome}")
         run = self._to(run, S.VERIFYING)
-        if self.hooks.verify is not None and self.hooks.verify(plan, result):
+        try:
+            verified = self.hooks.verify is not None and self.hooks.verify(plan, result)
+        except Exception:  # noqa: BLE001 - an error is "not verified"
+            verified = False
+            self._note(run, "action", "verify", result="error", error_code="verify_error")
+        if verified:
             return self._to(run, S.SUCCEEDED)
         if self.hooks.rollback is not None:
-            rb = self.hooks.rollback(plan, result)
+            try:
+                rb = self.hooks.rollback(plan, result)
+            except Exception:  # noqa: BLE001
+                rb = RunResult(outcome="unknown", error_code="rollback_error")
             self._note(run, "action", "rollback", result=rb.outcome, error_code=rb.error_code)
             if rb.outcome == "succeeded":
                 return self._to(run, S.ROLLED_BACK, "verify_failed")
