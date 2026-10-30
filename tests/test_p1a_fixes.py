@@ -1,12 +1,8 @@
-"""Slice 2 P1a: slice 1 fixes and Store additions (design v3 §12.10).
-
-The Store tests use only the public Store Protocol and run over the `store` fixture, so P2 adds `postgres` to
-STORES and they run unchanged against it.
-"""
+"""Slice 2 P1a: slice 1 fixes (design v3 §12.10). The Store additions' tests moved to the Store contract
+suite, tests/contracts/test_store.py, in P1b."""
 
 import logging
 import time
-from datetime import timedelta
 from decimal import Decimal
 
 import pytest
@@ -18,120 +14,15 @@ from hadavin_sdk.config import load_config
 from hadavin_sdk.guard.injection import injection_check
 from hadavin_sdk.llm.protocol import ProviderExhausted
 from hadavin_sdk.models import (
-    ApprovalDecision,
-    ApprovalRequest,
-    ChainStep,
-    Run,
     RunState,
     Verdict,
     now,
 )
 from hadavin_sdk.registry import load_registry
-from hadavin_sdk.store import MemoryStore
-from hadavin_sdk.store.protocol import NotFound
 from tests.test_executor import _approved, _plan
 from tests.test_s5_runtime import build
 
 S = RunState
-STORES = {"memory": MemoryStore}  # P2 adds "postgres"
-
-
-@pytest.fixture(params=sorted(STORES))
-def store(request):
-    return STORES[request.param]()
-
-
-def _run(store, state=S.RECEIVED):
-    run = Run(agent_id="a", principal_id="p", trigger_kind="event", trigger_ref="t")
-    store.create_run(run)
-    if state is not S.RECEIVED:
-        store.transition(run.run_id, S.RECEIVED, state)
-    return store.get_run(run.run_id)
-
-
-def _request(store, status="PENDING"):
-    req = ApprovalRequest(
-        run_id="run-x",
-        plan_hash="h",
-        risk_class="reversible",
-        chain_id="c",
-        steps=[ChainStep(approver_ids=["user:a"], timeout_s=60)],
-        status=status,
-        step_expires_at=now() + timedelta(minutes=1),
-        requested_by="svc:a",
-        summary="s",
-    )
-    store.save_approval_request(req)
-    return req
-
-
-# --- Store additions (public API only) ---------------------------------------------------------------
-
-
-def test_add_cost_unknown_run_is_not_found(store):
-    with pytest.raises(NotFound):
-        store.add_cost("run-missing", Decimal(1))
-
-
-def test_touch_moves_updated_at_and_keeps_state(store):
-    run = _run(store, S.WORKING)
-    time.sleep(0.01)
-    store.touch(run.run_id)
-    got = store.get_run(run.run_id)
-    assert got.updated_at > run.updated_at and got.state == S.WORKING
-    with pytest.raises(NotFound):
-        store.touch("run-missing")
-
-
-def test_list_runs_by_state_age_and_limit(store):
-    a, b = _run(store, S.WORKING), _run(store, S.WORKING)
-    _run(store, S.RECEIVED)
-    cutoff = now() + timedelta(seconds=1)
-    found = store.list_runs(S.WORKING, cutoff)
-    assert {r.run_id for r in found} == {a.run_id, b.run_id}
-    assert [r.run_id for r in found] == sorted(
-        [a.run_id, b.run_id], key=lambda i: store.get_run(i).updated_at
-    )  # oldest first
-    assert len(store.list_runs(S.WORKING, cutoff, limit=1)) == 1
-    assert store.list_runs(S.WORKING, a.updated_at - timedelta(seconds=1)) == []
-
-
-def test_get_approval_decision_returns_latest_or_none(store):
-    assert store.get_approval_decision("apr-x") is None
-    for decision in ("reject", "approve"):
-        store.save_approval_decision(
-            ApprovalDecision(
-                approval_id="apr-x",
-                plan_hash="h",
-                step=0,
-                decision=decision,
-                approver_id="user:a",
-                channel="fake",
-            )
-        )
-    assert store.get_approval_decision("apr-x").decision == "approve"
-
-
-def test_list_approvals_by_status(store):
-    pending, done = _request(store), _request(store)
-    store.update_approval_request(done.model_copy(update={"status": "APPROVED"}), "PENDING", 0)
-    assert [r.approval_id for r in store.list_approvals({"PENDING"})] == [pending.approval_id]
-    assert {r.approval_id for r in store.list_approvals({"PENDING", "APPROVED"})} == {
-        pending.approval_id,
-        done.approval_id,
-    }
-    assert store.list_approvals({"EXPIRED"}) == []
-
-
-def test_spend_totals_reads_without_writing(store):
-    today = now().date()
-    assert store.spend_totals("a", today) == (Decimal(0), Decimal(0))
-    store.spend_totals("a", today)
-    assert store.spend_totals("a", today) == (Decimal(0), Decimal(0))
-    store.add_spend("a", today, Decimal("0.40"))
-    assert store.spend_totals("a", today) == (Decimal("0.40"), Decimal("0.40"))
-
-
 # --- runtime, executor, models, registry ------------------------------------------------------------
 
 
@@ -221,7 +112,11 @@ def test_config_hash_ignores_defaulted_fields_and_sees_backend_swaps(cfg_dir):
     path.write_text(yaml.safe_dump(data), encoding="utf-8")
     assert load_registry(load_config(cfg_dir)).config_hash("test-agent") == base
     swapped = reg.config.model_copy(
-        update={"backends": reg.config.backends.model_copy(update={"llm": "bedrock"})}
+        update={
+            "backends": reg.config.backends.model_copy(
+                update={"llm": reg.config.backends.llm.model_copy(update={"kind": "bedrock"})}
+            )
+        }
     )
     assert load_registry(swapped).config_hash("test-agent") != base
 

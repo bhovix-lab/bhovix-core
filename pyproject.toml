@@ -18,11 +18,21 @@ dependencies = [
     "pyyaml==6.0.3",
 ]
 
+# Optional extras: install only the backends a client uses (design 12.5). `gemini` and `openai_compat` use
+# the standard library and need none.
+[project.optional-dependencies]
+anthropic = ["anthropic[vertex]==2.1.0"]
+aws = ["boto3==1.43.118", "cryptography==50.0.2"]
+signer = ["cryptography==50.0.2"]
+pg = ["psycopg[binary]==3.3.6"]
+
 [project.scripts]
 hadavin-sdk = "hadavin_sdk.cli:main"
 
 [dependency-groups]
 dev = ["pytest==9.1.1", "ruff==0.17.1"]
+# Contract-suite stand-ins for cloud services (CI installs it with every extra).
+test = ["moto[s3,kms,secretsmanager]==5.2.4"]
 # Free scanners that keep working when the repository turns private.
 scan = ["pip-audit==2.10.1", "bandit==1.9.4", "zizmor==1.31.1"]
 
@@ -48,3 +58,4 @@ extend-select = ["B", "DTZ", "I", "S", "UP"]
 testpaths = ["tests"]
 # Repo root on sys.path so fixture check modules (tests.fixtures.checks) resolve by name.
 pythonpath = ["."]
+markers = ["live: calls a real paid or cloud service; CI deselects it, run only on the owner's yes"]

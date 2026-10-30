@@ -12,42 +12,24 @@ from pathlib import Path
 
 from hadavin_sdk.actions.executor import Executor
 from hadavin_sdk.actions.secrets import SecretProvider
-from hadavin_sdk.approvals import Approvals, Channel, FakeChannel
-from hadavin_sdk.audit import LocalDirSink
-from hadavin_sdk.config import Config, ConfigError, load_config
-from hadavin_sdk.guard.injection import Detector, RegexDetector
+from hadavin_sdk.approvals import Approvals, Channel
+from hadavin_sdk.audit import AuditSink
+from hadavin_sdk.backends import make, platform_secrets
+from hadavin_sdk.config import Config, load_config
+from hadavin_sdk.guard.injection import Detector
 from hadavin_sdk.limits import Limits
-from hadavin_sdk.llm import LLM, FakeLLM
 from hadavin_sdk.models import now
 from hadavin_sdk.registry import Registry, load_registry
 from hadavin_sdk.runtime.agent_loop import Hooks, Runtime
-from hadavin_sdk.store import MemoryStore
-
-
-def make_llm(cfg: Config) -> LLM:
-    if cfg.backends.llm == "fake":
-        return FakeLLM(cfg.recorded_dir, cfg.routes)
-    raise ConfigError(f"llm backend {cfg.backends.llm!r} is not built yet (needs the owner's yes)")
-
-
-def make_detector(cfg: Config) -> Detector:
-    if cfg.backends.detector == "regex":
-        return RegexDetector(cfg.detector_threshold)
-    raise ConfigError(f"detector {cfg.backends.detector!r} is not built yet")
-
-
-def make_channel(cfg: Config) -> Channel:
-    if cfg.backends.channel == "fake":
-        return FakeChannel()
-    raise ConfigError(f"channel {cfg.backends.channel!r} is not built yet (needs the owner's yes)")
+from hadavin_sdk.store import Store
 
 
 @dataclass
 class App:
     config: Config
     registry: Registry
-    store: MemoryStore
-    audit: LocalDirSink
+    store: Store
+    audit: AuditSink
     limits: Limits
     executor: Executor
     approvals: Approvals
@@ -56,26 +38,36 @@ class App:
 
 def build(
     config_dir: Path | None,
-    secrets: SecretProvider,
     agents: list[str],
     *,
+    secrets: SecretProvider | None = None,
     channel: Channel | None = None,
     detector: Detector | None = None,
     clock: Callable[[], datetime] = now,
     timeout_s: float = 10.0,
 ) -> App:
+    """Build every backend from the config's table entries, in the design 4.2 order. The keyword overrides
+    replace one configured backend (tests); `secrets` replaces the configured provider for both the executor
+    and the backends' own secrets. Missing or shared secret names fail here, before the first run."""
     cfg = load_config(config_dir)
     reg = load_registry(cfg)
-    store, audit = MemoryStore(), LocalDirSink(cfg.audit_dir)
+    b = cfg.backends
+    secrets = secrets or make("secrets", b.secrets)
+    executor_names = {c.executor.secret_name for c in reg.contracts.values()}
+    platform_secrets.check(secrets, [s for _, s in b.entries()], executor_names)
+    store = make("store", b.store, secrets)
+    audit = make("audit", b.audit, secrets, store=store)
+    llm = make("llm", b.llm, secrets, routes=cfg.routes)
+    detector = detector or make("detector", b.detector[0], secrets, llm=llm)
+    channel = channel or make("channel", b.channel, secrets, store=store)
     limits = Limits(store, audit, reg)
     executor = Executor(reg, secrets, timeout_s=timeout_s)
-    detector = detector or make_detector(cfg)
     holder: dict[str, Runtime] = {}
     approvals = Approvals(
         store,
         audit,
         reg,
-        channel or make_channel(cfg),
+        channel,
         lambda run_id, status, d: holder["rt"].on_decided(run_id, status, d),
         clock,
         detector,
@@ -90,7 +82,7 @@ def build(
         reg,
         store,
         audit,
-        make_llm(cfg),
+        llm,
         detector,
         limits,
         agents,

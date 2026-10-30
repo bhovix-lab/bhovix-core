@@ -7,16 +7,17 @@ from __future__ import annotations
 
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal, get_args
 from urllib.parse import urlsplit
 
 import yaml
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from hadavin_sdk.backends.table import DEFAULTS, DEV_ONLY, TABLE, KindSettings
+from hadavin_sdk.errors import ConfigError
 
-class ConfigError(ValueError):
-    """The client config is invalid; the process must not start."""
+__all__ = ["Backends", "Config", "ConfigError", "Route", "confined", "load_config", "url_allowed"]
 
 
 def _money(v: object) -> object:
@@ -28,12 +29,10 @@ def _money(v: object) -> object:
 
 Money = Annotated[Decimal, BeforeValidator(_money)]
 
-AWS_BACKENDS = {"bedrock", "bedrock_guardrail"}
-REAL_BACKENDS = AWS_BACKENDS | {"slack"}
-
 
 class _Strict(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # A mistyped key may hold a secret: errors name the field, never its value.
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
 
 class Route(_Strict):
@@ -44,14 +43,88 @@ class Route(_Strict):
 
 
 class Backends(_Strict):
-    llm: Literal["fake", "bedrock"] = "fake"
-    store: Literal["memory"] = "memory"
-    audit: Literal["local_dir"] = "local_dir"
-    channel: Literal["fake", "slack"] = "fake"
-    detector: Literal["regex", "bedrock_guardrail"] = "regex"
+    """One validated settings model per capability (built by `parse_backends`, never from raw YAML)."""
 
-    def names(self) -> set[str]:
-        return {self.llm, self.store, self.audit, self.channel, self.detector}
+    secrets: KindSettings
+    store: KindSettings
+    audit: KindSettings
+    llm: KindSettings
+    detector: tuple[KindSettings, ...]
+    channel: KindSettings
+
+    def entries(self) -> list[tuple[str, KindSettings]]:
+        out = [(cap, getattr(self, cap)) for cap in TABLE if cap != "detector"]
+        return out + [("detector", d) for d in self.detector]
+
+
+# Slice 1 keys, refused with the place they moved to (design 12.3; no clients yet, so no migration shim).
+MOVED = {
+    "region": "backends.<capability>.region on each AWS kind",
+    "slack": "backends.channel: {kind: slack, channel_id, signing_secret_name, bot_token_secret_name}",
+    "detector_threshold": "backends.detector: [{kind: regex, threshold}]",
+    "audit_dir": "backends.audit: {kind: local_dir, dir}",
+    "recorded_dir": "backends.llm: {kind: fake, recorded_dir}",
+}
+
+
+def _one(cap: str, raw: Any, root: Path) -> KindSettings:
+    bare = isinstance(raw, str)
+    if bare:
+        raw = {"kind": raw}
+    if not isinstance(raw, dict) or not isinstance(raw.get("kind"), str):
+        raise ConfigError(f"backends.{cap}: expected {{kind: <name>, ...settings}}")
+    kinds = TABLE[cap]
+    kind = raw["kind"]
+    if kind not in kinds:
+        raise ConfigError(
+            f"backend {cap}: unknown kind {kind!r}; known: {', '.join(sorted(kinds))}"
+        )
+    model = kinds[kind].settings
+    required = [n for n, f in model.model_fields.items() if f.is_required() and n != "kind"]
+    if bare and required:
+        raise ConfigError(
+            f"backends.{cap}: {kind!r} needs settings; "
+            f"write backends.{cap}: {{kind: {kind}, {', '.join(required)}}}"
+        )
+    data = dict(raw)
+    for (
+        name,
+        field,
+    ) in model.model_fields.items():  # relative paths are relative to the config folder
+        if Path in (field.annotation, *get_args(field.annotation)) and isinstance(
+            data.get(name), str
+        ):
+            data[name] = root / data[name]
+    try:
+        return model(**data)
+    except ValidationError as exc:
+        raise ConfigError(f"backends.{cap} ({kind}): {exc}") from exc
+
+
+def parse_backends(raw: Any, root: Path) -> Backends:
+    if raw is not None and not isinstance(raw, dict):
+        raise ConfigError("backends: expected a mapping of capability to {kind: ...}")
+    raw = dict(raw or {})
+    if unknown := set(raw) - set(TABLE):
+        raise ConfigError(
+            f"backends: unknown capability {sorted(unknown)}; known: {', '.join(TABLE)}"
+        )
+    if missing := [cap for cap in TABLE if cap not in raw and cap not in DEFAULTS]:
+        raise ConfigError(f"backends: {', '.join(missing)} must be set")
+    built: dict[str, Any] = {}
+    for cap in TABLE:
+        value = raw.get(cap, DEFAULTS.get(cap))
+        if cap == "detector":
+            items = value if isinstance(value, list) else [value]
+            if len(items) != 1:
+                # ponytail: list semantics (any flags, max score) arrive with slice 2 P6; one entry until then.
+                raise ConfigError(
+                    "backends.detector: exactly one detector until detector lists (P6)"
+                )
+            built[cap] = (_one(cap, items[0], root),)
+        else:
+            built[cap] = _one(cap, value, root)
+    return Backends(**built)
 
 
 _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
@@ -70,30 +143,20 @@ class System(_Strict):
     base_url: str
 
 
-class SlackConfig(_Strict):
-    signing_secret_name: str
-    bot_token_name: str
-    channel_id: str
-
-
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="HADAVIN_")
     config_dir: Path
 
 
 class Config(_Strict):
+    environment: Literal["dev", "pilot", "prod"]
     routes: dict[str, Route]
-    backends: Backends = Backends()
-    region: str | None = None
-    audit_dir: Path
-    recorded_dir: Path
+    backends: Backends
     golden_dir: Path
     inputs_dir: Path
-    detector_threshold: float = Field(ge=0.0, le=1.0)
     eval_threshold: float = Field(default=1.0, ge=0.0, le=1.0)
     check_modules: list[str] = []
     systems: dict[str, System] = {}
-    slack: SlackConfig | None = None
     egress_hosts: frozenset[str] = frozenset()
     allow_insecure_loopback: bool = False  # true only in the local test fixture config
     root: Path
@@ -106,13 +169,15 @@ class Config(_Strict):
                     f"system {name}: base_url must be https "
                     f"(http only for loopback with allow_insecure_loopback): {system.base_url}"
                 )
-        names = self.backends.names()
-        if names & AWS_BACKENDS and not self.region:
-            raise ValueError("region is required when an AWS backend is set")
-        if names & REAL_BACKENDS and not self.egress_hosts:
-            raise ValueError("egress.yaml is empty while a real backend is set")
-        if self.backends.channel == "slack" and self.slack is None:
-            raise ValueError("slack settings are required when channel is slack")
+        if self.environment != "dev":  # environment table, design 4.6
+            refused = [
+                f"{c}: {s.kind}" for c, s in self.backends.entries() if (c, s.kind) in DEV_ONLY
+            ]
+            refused += ["allow_insecure_loopback"] if self.allow_insecure_loopback else []
+            if refused:
+                raise ValueError(
+                    f"environment {self.environment}: refused outside dev: {', '.join(refused)}"
+                )
         return self
 
 
@@ -140,9 +205,12 @@ def load_config(config_dir: Path | None = None) -> Config:
         root = Path(config_dir) if config_dir else Settings().config_dir  # type: ignore[call-arg]
         raw = _read_yaml(root / "config.yaml")
         egress = _read_yaml(root / "egress.yaml").get("hosts") or []
-        for key in ("audit_dir", "recorded_dir", "golden_dir", "inputs_dir"):
+        if moved := [k for k in MOVED if k in raw]:
+            raise ConfigError("; ".join(f"{k} moved to {MOVED[k]}" for k in moved))
+        for key in ("golden_dir", "inputs_dir"):
             if key in raw:
                 raw[key] = root / raw[key]
+        raw["backends"] = parse_backends(raw.get("backends"), root)
         return Config(**raw, egress_hosts=frozenset(egress), root=root)
     except ConfigError:
         raise
