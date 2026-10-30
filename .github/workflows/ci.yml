@@ -58,7 +58,7 @@ jobs:
           activate-environment: true
           cache-suffix: "ci-check"
       - name: Install (locked, every backend extra and the contract-suite test group)
-        run: uv sync --locked --all-extras --group test
+        run: uv sync --locked --no-build --all-extras --group test
       - name: Lint
         run: ruff check src tests demos
       - name: Format
@@ -85,7 +85,7 @@ jobs:
           activate-environment: true
           cache-suffix: "ci-security"
       - name: Install the scanners (locked)
-        run: uv sync --locked --only-group scan
+        run: uv sync --locked --no-build --only-group scan
       - name: Dependencies with known vulnerabilities (every locked package, hashes required)
         run: |
           uv export --locked --all-extras --all-groups --no-emit-project --format requirements-txt -o "$RUNNER_TEMP/locked.txt"
