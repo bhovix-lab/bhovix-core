@@ -91,6 +91,38 @@ def test_core_never_imports_demos():
     assert core_imports_demos(ROOT / "src" / "bhovix_core") == []
 
 
+def test_every_reversible_contract_names_an_existing_rollback_test():
+    assert missing_rollback_tests(ROOT, action_dirs(ROOT)) == []
+
+
+SECRET_HOLDERS = {"bhovix_core.actions.secrets", "bhovix_core.actions.executor"}
+
+
+def secret_imports(pkg_dirs: list[Path]) -> list[str]:
+    """runtime, approvals and llm must never import the secret provider or the executor."""
+    hits = []
+    for d in pkg_dirs:
+        for path in d.rglob("*.py"):
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                names = []
+                if isinstance(node, ast.Import):
+                    names = [a.name for a in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    names = [node.module] + [f"{node.module}.{a.name}" for a in node.names]
+                hits += [f"{path.name}: {n}" for n in names if n in SECRET_HOLDERS]
+    return hits
+
+
+def test_import_boundary_runtime_approvals_llm_never_see_secrets():
+    core = ROOT / "src" / "bhovix_core"
+    assert secret_imports([core / "runtime", core / "approvals", core / "llm"]) == []
+
+
+def test_plant_runtime_importing_executor_is_caught(tmp_path):
+    (tmp_path / "bad.py").write_text("from bhovix_core.actions import executor\n", encoding="utf-8")
+    assert secret_imports([tmp_path]) == ["bad.py: bhovix_core.actions.executor"]
+
+
 def test_plant_missing_rollback_test_is_caught(tmp_path):
     actions = tmp_path / "actions"
     actions.mkdir()

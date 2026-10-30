@@ -1,6 +1,7 @@
 """Shared fixtures: every test works on a copy of the fixture config in tmp_path, never the repo."""
 
 import json
+import secrets
 import shutil
 from pathlib import Path
 
@@ -42,3 +43,18 @@ def qualify(registry, agent_id: str = "test-agent", green: bool = True) -> None:
 @pytest.fixture
 def cfg_dir(tmp_path: Path) -> Path:
     return make_cfg(tmp_path)
+
+
+@pytest.fixture
+def fake_system():
+    """fixture-records on a random port with a random token (shared with the fake secret provider)."""
+    from tests.fixtures.fake_system import FakeSystem
+
+    system = FakeSystem(token=secrets.token_hex(16)).start()
+    yield system
+    system.stop()
+
+
+@pytest.fixture
+def live_cfg_dir(tmp_path: Path, fake_system) -> Path:
+    return make_cfg(tmp_path, port=fake_system.port)
