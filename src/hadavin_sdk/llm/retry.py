@@ -1,9 +1,13 @@
 """Bounded retries for every network llm kind (ported from WARDEN ``llm.py``; design 4.3).
 
-Each SDK's own retries are off, so this loop is the only one. A transient failure (a connection error or socket
-timeout, HTTP 429 or 5xx, a throttling error code) is retried with exponential backoff and full jitter, up to
-``max_attempts`` requests in all; still failing, it is ``ProviderExhausted``. Anything else (401 bad key,
-400 malformed request) fails the same way every time, so it is a ``ProviderError`` at once.
+Each SDK's own retries are off, so this loop is the only one. A transient failure is retried with exponential
+backoff and full jitter, up to ``max_attempts`` requests in all; still failing, it is ``ProviderExhausted``.
+Anything else (401 bad key, 400 malformed request) fails the same way every time, so it is a ``ProviderError``
+at once.
+
+Vendor-neutral (lock-in audit 2026-10-31, row 2): this module knows HTTP statuses, the standard library's network
+errors and TLS, nothing else. Each kind knows its own SDK's errors and passes ``retryable(exc) -> bool | None``
+(None: no opinion, the generic rule decides) and ``detail(exc) -> str`` (an error code safe to log).
 """
 
 from __future__ import annotations
@@ -18,55 +22,22 @@ from hadavin_sdk.llm.protocol import ProviderError, ProviderExhausted
 BASE_DELAY_S = 0.5
 MAX_DELAY_S = 8.0
 
-# Network failures with no HTTP status, by class name so no SDK is imported here: stdlib (OSError covers
-# URLError and socket timeouts), anthropic, botocore.
-_NETWORK = frozenset(
-    {
-        "OSError",
-        "APIConnectionError",
-        "APITimeoutError",
-        "EndpointConnectionError",
-        "ConnectTimeoutError",
-        "ReadTimeoutError",
-        "ConnectionClosedError",
-        "TransportError",  # google-auth, refreshing a Vertex token
-    }
-)
-# Bedrock error codes worth another attempt (Converse API reference).
-_RETRY_CODES = frozenset(
-    {
-        "ThrottlingException",
-        "ServiceQuotaExceededException",
-        "ServiceUnavailableException",
-        "InternalServerException",
-        "ModelNotReadyException",
-        "ModelTimeoutException",
-    }
-)
+Retryable = Callable[[BaseException], "bool | None"]
+
+# A peer closing the TLS connection mid-handshake or mid-read: a dropped connection, worth another attempt.
+_TLS_DROPS = (ssl.SSLEOFError, ssl.SSLZeroReturnError)
 
 
-def _status(exc: BaseException) -> int | None:
-    """The HTTP status an SDK error carries: ``status_code`` (anthropic), ``code`` (urllib), or botocore's
-    response metadata."""
-    response = getattr(exc, "response", None)
-    meta = response.get("ResponseMetadata", {}) if isinstance(response, dict) else {}
-    for value in (
-        getattr(exc, "status_code", None),
-        getattr(exc, "code", None),
-        meta.get("HTTPStatusCode"),
-    ):
-        if isinstance(value, int):
+def status(exc: BaseException) -> int | None:
+    """The HTTP status an error carries as an int: ``status_code`` (most SDKs) or ``code`` (urllib)."""
+    for value in (getattr(exc, "status_code", None), getattr(exc, "code", None)):
+        if isinstance(value, int) and not isinstance(value, bool):
             return value
     return None
 
 
-def _error_code(exc: BaseException) -> str:
-    response = getattr(exc, "response", None)
-    return str(response.get("Error", {}).get("Code", "")) if isinstance(response, dict) else ""
-
-
-# A peer closing the TLS connection mid-handshake or mid-read: a dropped connection, worth another attempt.
-_TLS_DROPS = (ssl.SSLEOFError, ssl.SSLZeroReturnError)
+def retryable_status(code: int) -> bool:
+    return code in (408, 429) or code >= 500
 
 
 def _chain(exc: BaseException) -> list[BaseException]:
@@ -81,15 +52,15 @@ def _chain(exc: BaseException) -> list[BaseException]:
     return seen
 
 
-def transient(exc: BaseException) -> bool:
+def transient(exc: BaseException, retryable: Retryable | None = None) -> bool:
     if any(isinstance(e, ssl.SSLError) and not isinstance(e, _TLS_DROPS) for e in _chain(exc)):
         return False  # a certificate or protocol problem fails the same way every time
-    if _error_code(exc) in _RETRY_CODES:
-        return True
-    status = _status(exc)
-    if status is not None:
-        return status in (408, 429) or status >= 500
-    return any(c.__name__ in _NETWORK for c in type(exc).__mro__)
+    if retryable is not None and (said := retryable(exc)) is not None:
+        return said
+    code = status(exc)
+    if code is not None:
+        return retryable_status(code)
+    return isinstance(exc, OSError)  # URLError, socket timeouts, connection resets
 
 
 def retry_after(exc: BaseException) -> float:
@@ -103,9 +74,9 @@ def retry_after(exc: BaseException) -> float:
         return 0.0
 
 
-def describe(exc: BaseException) -> str:
-    """Class, status and error code only: an SDK message can quote the request."""
-    parts = [type(exc).__name__, str(_status(exc) or ""), _error_code(exc)]
+def describe(exc: BaseException, detail: Callable[[BaseException], str] | None = None) -> str:
+    """Class, status and the kind's error code only: an SDK message can quote the request."""
+    parts = [type(exc).__name__, str(status(exc) or ""), detail(exc) if detail else ""]
     return " ".join(p for p in parts if p)
 
 
@@ -115,6 +86,8 @@ def with_retry[T](
     label: str,
     max_attempts: int,
     sleep: Callable[[float], None] = time.sleep,
+    retryable: Retryable | None = None,
+    detail: Callable[[BaseException], str] | None = None,
 ) -> T:
     for attempt in range(1, max_attempts + 1):
         try:
@@ -122,11 +95,11 @@ def with_retry[T](
         except ProviderError:
             raise
         except Exception as exc:  # every failure is classified below, never swallowed
-            if not transient(exc):
-                raise ProviderError(f"{label}: {describe(exc)}") from exc
+            if not transient(exc, retryable):
+                raise ProviderError(f"{label}: {describe(exc, detail)}") from exc
             if attempt == max_attempts:
                 raise ProviderExhausted(
-                    f"{label}: {describe(exc)} after {max_attempts} attempts"
+                    f"{label}: {describe(exc, detail)} after {max_attempts} attempts"
                 ) from exc
             # Full jitter spreads retries from many runs hitting one throttled account (not crypto); never
             # sooner than the server asked.

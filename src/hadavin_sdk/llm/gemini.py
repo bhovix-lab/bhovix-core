@@ -20,10 +20,18 @@ from hadavin_sdk.models import Reply, ToolCall
 BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
 
+def floating(model_id: str) -> bool:
+    """Refused: `*-latest` (generic) and a name with no version at all (`gemini-pro`, `gemini-flash`).
+
+    ponytail: a versioned name without a stable suffix (`gemini-2.0-flash` vs `gemini-2.0-flash-001`) may still
+    be an auto-updated alias; check Google's versioning page per model at P9 and tighten when one moves."""
+    return not any(c.isdigit() for c in model_id)
+
+
 def make(settings: Any, deps: Any) -> GeminiLLM:
     return GeminiLLM(
         lambda: deps.resolve(settings.api_key_secret_name),
-        pinned(dict(deps.routes)),
+        pinned(dict(deps.routes), floating),
         settings.call_timeout_s,
         settings.max_attempts,
     )

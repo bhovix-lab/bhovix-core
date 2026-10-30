@@ -7,9 +7,10 @@ imports no other Hadavin module (``config`` imports it).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -88,19 +89,19 @@ class GeminiSettings(_LLMSettings):
 
 
 class RegexSettings(KindSettings):
-    threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    threshold: float = Field(default=0.5, gt=0.0, le=1.0)  # 0 would flag every clean text (score 0)
 
 
 class JudgeSettings(KindSettings):
     route: str  # a key of `routes`; checked against them at load
-    threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+    threshold: float = Field(default=0.7, gt=0.0, le=1.0)
 
 
 class GuardrailSettings(KindSettings):
     guardrail_id: str
     guardrail_version: str
     region: str = Field(pattern=_NAME)
-    threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    threshold: float = Field(default=0.5, gt=0.0, le=1.0)
 
 
 class LocalDirSettings(KindSettings):
@@ -168,6 +169,34 @@ class Entry:
     extra: str | None = None  # pip extra the factory module needs: hadavin-sdk[<extra>]
     # Design 0: "have" (slice 1), "slice2" (suite + one live run), "slice2-unverified" (suite on fakes only).
     status: str = "have"
+    # The hosts this kind's SDK or HTTP client connects to (design 4.5, 12.9): `hadavin_sdk.backends.hosts`
+    # builds a suggested egress list from them. None: no network, or a host only a secret names (a DSN).
+    hosts: Callable[[Any], list[str]] | None = None
+
+
+def _aws(service: str) -> Callable[[Any], list[str]]:
+    return lambda s: [f"{service}.{s.region}.amazonaws.com"]
+
+
+def _vertex_host(region: str) -> str:
+    """As the anthropic SDK derives Vertex's host (llm/anthropic.py passes the same URL explicitly)."""
+    if region == "global":
+        return "aiplatform.googleapis.com"
+    if region in ("us", "eu"):
+        return f"aiplatform.{region}.rep.googleapis.com"
+    return f"{region}-aiplatform.googleapis.com"
+
+
+def _anthropic_hosts(s: Any) -> list[str]:
+    if s.platform == "vertex":
+        return [_vertex_host(s.region), "oauth2.googleapis.com"]  # plus the Google token endpoint
+    if s.platform == "foundry":
+        return [f"{s.resource}.services.ai.azure.com"]
+    return ["api.anthropic.com"]
+
+
+def _chain_hosts(s: Any) -> list[str]:
+    return [f"{s.anchor.bucket}.s3.{s.anchor.region}.amazonaws.com"] if s.anchor else []
 
 
 _BUILTIN = "hadavin_sdk.backends.builtin"
@@ -186,6 +215,7 @@ TABLE: dict[str, dict[str, Entry]] = {
             "hadavin_sdk.actions.secrets_aws:build",
             extra="aws",
             status=_UNVERIFIED,
+            hosts=_aws("secretsmanager"),
         ),
     },
     "signer": {
@@ -193,7 +223,13 @@ TABLE: dict[str, dict[str, Entry]] = {
         "ed25519_local": Entry(
             Ed25519LocalSettings, f"{_SIGNER}:build_local", extra="signer", status=_UNVERIFIED
         ),
-        "aws_kms": Entry(AwsKmsSettings, f"{_SIGNER}:build_kms", extra="aws", status=_UNVERIFIED),
+        "aws_kms": Entry(
+            AwsKmsSettings,
+            f"{_SIGNER}:build_kms",
+            extra="aws",
+            status=_UNVERIFIED,
+            hosts=_aws("kms"),
+        ),
     },
     "store": {
         "memory": Entry(KindSettings, f"{_BUILTIN}:memory_store"),
@@ -204,23 +240,57 @@ TABLE: dict[str, dict[str, Entry]] = {
     "audit": {
         "local_dir": Entry(LocalDirSettings, f"{_BUILTIN}:local_dir_audit"),
         "chain": Entry(
-            ChainSettings, "hadavin_sdk.audit.chain:build", extra="signer", status=_UNVERIFIED
+            ChainSettings,
+            "hadavin_sdk.audit.chain:build",
+            extra="signer",
+            status=_UNVERIFIED,
+            hosts=_chain_hosts,
         ),
     },
     "llm": {
         "fake": Entry(FakeLLMSettings, f"{_BUILTIN}:fake_llm"),
         # Every kind below is slice2-unverified until its P9 live run (design 12.1).
-        "anthropic": Entry(AnthropicSettings, "hadavin_sdk.llm.anthropic:make", "anthropic"),
-        "bedrock": Entry(BedrockSettings, "hadavin_sdk.llm.bedrock:make", "aws"),
-        "openai_compat": Entry(OpenAICompatSettings, "hadavin_sdk.llm.openai_compat:make"),
-        "gemini": Entry(GeminiSettings, "hadavin_sdk.llm.gemini:make"),
+        "anthropic": Entry(
+            AnthropicSettings,
+            "hadavin_sdk.llm.anthropic:make",
+            "anthropic",
+            status=_UNVERIFIED,
+            hosts=_anthropic_hosts,
+        ),
+        "bedrock": Entry(
+            BedrockSettings,
+            "hadavin_sdk.llm.bedrock:make",
+            "aws",
+            status=_UNVERIFIED,
+            hosts=_aws("bedrock-runtime"),
+        ),
+        "openai_compat": Entry(
+            OpenAICompatSettings,
+            "hadavin_sdk.llm.openai_compat:make",
+            status=_UNVERIFIED,
+            hosts=lambda s: [urlsplit(s.base_url).hostname or ""],
+        ),
+        "gemini": Entry(
+            GeminiSettings,
+            "hadavin_sdk.llm.gemini:make",
+            status=_UNVERIFIED,
+            hosts=lambda s: ["generativelanguage.googleapis.com"],
+        ),
     },
     "detector": {
         "regex": Entry(RegexSettings, f"{_BUILTIN}:regex_detector"),
-        # slice2-unverified until the P9 live run (design 12.1).
-        "llm_judge": Entry(JudgeSettings, "hadavin_sdk.guard.judge:make"),
+        # llm_judge connects through the configured llm kind (its hosts are the llm's).
+        "llm_judge": Entry(JudgeSettings, "hadavin_sdk.guard.judge:make", status=_UNVERIFIED),
         "bedrock_guardrail": Entry(
-            GuardrailSettings, "hadavin_sdk.guard.bedrock_guardrail:make", "aws"
+            GuardrailSettings,
+            "hadavin_sdk.guard.bedrock_guardrail:make",
+            "aws",
+            status=_UNVERIFIED,
+            # The runtime screens; the control plane reads the guardrail's filters once at start-up.
+            hosts=lambda s: [
+                f"bedrock-runtime.{s.region}.amazonaws.com",
+                f"bedrock.{s.region}.amazonaws.com",
+            ],
         ),
     },
     "channel": {"fake": Entry(FakeChannelSettings, f"{_BUILTIN}:fake_channel")},

@@ -241,6 +241,9 @@ class Runtime:
                 except Exception:  # noqa: BLE001 - a broken tool must not strand the run in WORKING
                     self._note(run, "tool", call.name, result="error", error_code="tool_error")
                     return self._to(run, S.NEEDS_PERSON, "tool_error")
+                # The reply just charged may have used the budget: a paid screen never runs past it (fail closed).
+                if (stopped := self._limits_stop(run)) is not None:
+                    return stopped
                 verdict = self._screen(run, result, f"tool:{call.name}")
                 if verdict.flagged:  # tool output is untrusted text too
                     self._note(

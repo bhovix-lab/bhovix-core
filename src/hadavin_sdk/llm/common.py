@@ -24,18 +24,21 @@ ANSWER_TOOL = "submit_answer"
 _EMPTY = {"type": "object", "properties": {}}
 
 # WARDEN register M15: an alias moves when the vendor ships a new model, so a qualified agent would silently
-# change model. Only exact ids are accepted.
-# ponytail: a name heuristic; an untagged Ollama name (`llama3` = `llama3:latest`) still passes. Pin by digest
-# when a client runs Ollama in production.
-_FLOATING = re.compile(
-    r"(?i)^(?:sonnet|opus|haiku|fable|default|best|opusplan)(?:\[1m\])?$|[-:]latest$"
-)
+# change model. Only exact ids are accepted. Which names move is each vendor's convention, so each kind exports
+# `floating(model_id, settings) -> bool` (lock-in audit 2026-10-31, row 2); `latest` moves everywhere.
+_LATEST = re.compile(r"(?i)(?:^|[-:/.])latest$")
 
 
-def pinned(routes: dict[str, Any]) -> dict[str, Any]:
-    """The routes, if every model id names one model; an alias that can move is refused."""
+def floating_anywhere(model_id: str) -> bool:
+    return not model_id.strip() or bool(_LATEST.search(model_id.strip()))
+
+
+def pinned(
+    routes: dict[str, Any], floating: Callable[[str], bool] = floating_anywhere
+) -> dict[str, Any]:
+    """The routes, if every model id names one model by its kind's rule; an alias that can move is refused."""
     for name, route in routes.items():
-        if not route.model_id.strip() or _FLOATING.search(route.model_id.strip()):
+        if floating_anywhere(route.model_id) or floating(route.model_id.strip()):
             raise ConfigError(
                 f"route {name}: model_id {route.model_id!r} is an alias that moves to new models; "
                 "name an exact model id"
@@ -218,7 +221,18 @@ class NetworkLLM:
         raise NotImplementedError
 
     def _retry(self, call: Callable[[], Answer]) -> Answer:
-        return with_retry(call, label=self.label, max_attempts=self.max_attempts, sleep=self._sleep)
+        return with_retry(
+            call,
+            label=self.label,
+            max_attempts=self.max_attempts,
+            sleep=self._sleep,
+            retryable=self.retryable,
+            detail=self.detail,
+        )
+
+    # The kind's own SDK errors (llm/retry.py stays vendor-neutral): None means no opinion / no code.
+    retryable: Callable[[BaseException], bool | None] | None = None
+    detail: Callable[[BaseException], str] | None = None
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):

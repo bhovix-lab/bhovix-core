@@ -105,13 +105,20 @@ class Registry:
                 "route": dump(self.config.routes[agent.model_route]),
                 "actions": [dump(self.contracts[a]) for a in sorted(agent.scope_allowed)],
                 "llm_backend": llm.kind,
-                # Where the model runs (design 4.3); keys only when set, so `fake` agents keep their hash.
+                # Where and how the model runs (design 4.3); keys only when set, so `fake` agents keep their hash.
                 **{
                     f"llm_{k}": getattr(llm, k)
-                    for k in ("platform", "base_url")
+                    for k in ("platform", "base_url", "max_completion_tokens")
                     if getattr(llm, k, None)
                 },
                 **({"judges": judges} if judges else {}),
+                # The bar the gate run passed: raising it must not leave an old green run standing. Only when not
+                # the default 1.0, so agents gated at the default keep their hash.
+                **(
+                    {"eval_threshold": str(self.config.eval_threshold)}
+                    if self.config.eval_threshold != 1.0
+                    else {}
+                ),
             }
         )
 

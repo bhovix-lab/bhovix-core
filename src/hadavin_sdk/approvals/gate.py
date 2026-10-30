@@ -1,8 +1,9 @@
 """Text cleaning for anything people read (approval and channel text).
 
 Copied then edited from WARDEN `src/warden/gate.py` @ a1e76cbf (veerarakesh56/warden): rule G3
-(`sanitise_text` and its helpers). Not ported (WARDEN outbound policy): enforce, hedge,
-withhold_commands, leaked_kinds/data_leaks/assembled_kinds/where_withheld, for_terminal,
+(`sanitise_text` and its helpers) and G4 (`withhold_commands`, rewritten platform-neutral and fail closed).
+Not ported (WARDEN outbound policy): enforce, hedge,
+leaked_kinds/data_leaks/assembled_kinds/where_withheld, for_terminal,
 outbound_data, sanitise_data, GateResult. The original module notes follow.
 
 The outbound gate: the last check on what WARDEN says before it leaves the process.
@@ -352,46 +353,212 @@ _UNVERIFIABLE = re.compile(
 )
 
 
-# G4 (2026-10-16): WARDEN prints no command a person could paste to change something - a fix goes only through a
-# catalogue plan and a signed approval, which WARDEN applies itself. Model-written prose can still carry one (a
-# hijacked model, or a log line it repeats), so each write-command shape in it is withheld where it stands. Write
-# verbs only: a read-only `kubectl get` or `aws ... describe-...` changes nothing, and grounding._COMMAND_WORDS
-# (any `delete`, `drop`, `rm`, `kill`) is for a one-name target - in prose it would mark plain English.
-# A command, not the story of one: the model often says what happened ("a Terraform apply at 07:31 rewrote the
-# schedules", "a 'kubectl rollout restart' replaced the pods", "queued behind a DDL on invoices"). Measured on
-# the 2,035 recorded model strings in the repository (docs/bench, evals, tests; 2026-10-16), a looser first version
-# withheld 8 of those and no command; so each shape here needs what makes it runnable - the program in lower case,
-# an aws verb-noun operation, a kubectl object, a terraform or helm flag or line end, an SQL object and clause in
-# capitals ("update its set of rules" is English), a call's parenthesis.
-# Linear on any input (review, 2026-10-16: `--?[\w-]+` read "--a" two ways, and 24 flags took 19 s - model text is
-# attacker-shaped, so that was a way to stall the worker). One reading per flag - after its dashes a letter or digit -
-# inside an atomic group, which is never re-entered.
-_FLAGS = r"(?>(?:-{1,2}[A-Za-z0-9][\w-]*(?:[= ][^\s-]\S*)?\s+)*)"
-_K8S_OBJECT = (
-    r"(?:deploy|deployment|deployments|ns|namespace|namespaces|po|pod|pods|svc|service|services|cm|configmap|"
-    r"secret|secrets|sts|statefulset|ds|daemonset|rs|replicaset|job|cronjob|hpa|ing|ingress|node|nodes|pvc|"
-    r"crd|all|-f|--filename)\b"
+# G4: no command a person could paste to change a system reaches them. A change goes only through an action
+# contract, the gate and a signed approval, which the executor runs itself. Model-derived text can still carry one
+# (a hijacked model, or a log line it repeats), so each command in it is withheld where it stands.
+#
+# Ported from WARDEN `withhold_commands` (gate.py @ a1e76cbf), which named write shapes for the AWS CLI, kubectl,
+# helm, terraform and SQL only, so any other platform's command passed (lock-in audit 2026-10-31, row 13).
+# Platform-neutral and FAIL CLOSED here: for every CLI below, a command is withheld unless it is positively
+# recognised as read-only (a read verb in its subcommand chain and no write verb). The SQL, `rm -rf`, `curl | sh`
+# and PowerShell shapes have no read list, so they stay write shapes.
+#
+# A command, not the story of one (WARDEN measured 2,035 recorded model strings, 2026-10-16): the model says what
+# happened ("a 'kubectl rollout restart' replaced the pods"). So a program name counts only in lower case, followed
+# by a subcommand chain that ENDS like a command: the line or text ends, a flag or a shell operator follows, or an
+# argument with a path, digit, `:`, `=` or `@` does. A chain that runs on into prose (a quote, a comma, a fifth
+# plain word) is a story. `git`, `docker`, `podman` and `helm` are also English words or nouns in incident prose,
+# so they count only where a command is written: at the start of a line, after `$`, `sudo`, a shell operator or a
+# backtick, or with a flag. Each program with a fixed command set must name one of its own subcommands first.
+# Linear: each name is matched once, then at most _MAX_TOKENS tokens are read after it, never re-scanned.
+WITHHELD = "[command withheld (G4)]"
+_MAX_TOKENS = 12
+_MAX_WORDS = 4
+
+
+def _words(s: str) -> frozenset[str]:
+    return frozenset(s.split())
+
+
+# Write verbs in any CLI. A chain holding one is never read-only, whatever read verb it also holds.
+_WRITE_VERBS = _words(
+    "add annotate apply attach autoscale cordon cp create del delete deploy destroy detach disable down drain drop "
+    "edit enable exec expose grant import install invoke kill label modify move mv patch prune purge push put "
+    "reboot remove replace reset restart revoke rm rmi rollback run scale set start stop sync taint terminate "
+    "uncordon uninstall unset up update upgrade"
 )
-_WRITE_COMMAND = re.compile(
-    r"\baws\s+"
-    + _FLAGS
-    + r"[a-z0-9-]+\s+(?:accept|add|apply|associate|attach|authorize|cancel|copy|create|delete|"
-    r"deregister|detach|disable|disassociate|enable|execute|failover|import|invoke|modify|publish|purge|put|reboot|"
-    r"register|reject|remove|replace|reset|restore|revoke|run|send|set|start|stop|tag|terminate|untag|update)-[a-z0-9-]+"
-    r"|\baws\s+" + _FLAGS + r"(?:s3\s+(?:cp|mv|rb|rm|sync)|lambda\s+invoke)\b"
-    r"|\bkubectl\s+"
-    + _FLAGS
-    + r"(?:annotate|apply|autoscale|cordon|cp|create|delete|drain|edit|exec|expose|label|"
-    r"patch|replace|rollout|run|scale|set|taint|uncordon)\s+(?:\S+\s+){0,2}"
-    + _K8S_OBJECT
-    + r"|\bhelm\s+(?:install|rollback|uninstall|upgrade)\s+[\w.-]+(?=\s*$|\s+(?:\d+(?:\s|$)|-|\S*/))"
-    r"|\bterraform\s+(?:apply|destroy|import|taint|state\s+rm)(?=\s*$|\s*[-;&|])"
-    r"|\bpg_(?:cancel|terminate)_backend\s*\("
+_AWS_READ_PREFIXES = ("describe-", "get-", "list-", "head-", "batch-get-", "lookup-", "search-")
+
+# program -> (its own first-level subcommands, or None when the set is open; read verbs)
+_PROGRAMS: dict[str, tuple[frozenset[str] | None, frozenset[str]]] = {
+    "aws": (None, _words("ls scan query wait")),
+    "gcloud": (None, _words("describe list get-iam-policy get-value read info version")),
+    "gsutil": (None, _words("ls cat du stat hash version")),
+    "bq": (None, _words("ls show head version")),
+    "az": (None, _words("show list version")),
+    "azcopy": (None, _words("list jobs show env version")),
+    "kubectl": (
+        _words(
+            "annotate api-resources api-versions apply attach auth autoscale certificate cluster-info completion "
+            "config cordon cp create debug delete describe diff drain edit events exec explain expose get kustomize "
+            "label logs patch plugin port-forward proxy replace rollout run scale set taint top uncordon version "
+            "wait"
+        ),
+        _words(
+            "get describe logs top explain version api-resources api-versions cluster-info diff events "
+            "status history can-i"
+        ),
+    ),
+    "helm": (
+        _words(
+            "create dependency diff env get history install lint list ls package plugin pull push registry "
+            "repo rollback search show status template test uninstall upgrade verify version"
+        ),
+        _words("get history lint list ls search show status template verify version env diff"),
+    ),
+    "terraform": (
+        _words(
+            "init validate plan apply destroy console fmt force-unlock get graph import login logout "
+            "metadata output providers refresh show state taint test untaint version workspace"
+        ),
+        _words("plan validate show output providers graph version list"),
+    ),
+    "pulumi": (
+        _words(
+            "about cancel config convert destroy import install login logout logs new org package plugin "
+            "policy preview refresh schema stack state up update version watch whoami"
+        ),
+        _words("about preview logs whoami version ls output get"),
+    ),
+    "ansible": (None, _words("version")),
+    "ansible-playbook": (None, _words("syntax-check list-tasks list-hosts")),
+    "systemctl": (
+        None,
+        _words(
+            "status show cat list-units list-unit-files list-timers list-sockets is-active is-enabled "
+            "is-failed is-system-running get-default"
+        ),
+    ),
+    "psql": (None, frozenset()),
+    "mysql": (None, frozenset()),
+    "mongosh": (None, frozenset()),
+    "redis-cli": (None, _words("ping info get keys scan ttl type exists")),
+    "git": (
+        _words(
+            "add am apply bisect blame branch checkout cherry-pick clean clone commit describe diff fetch "
+            "grep init log merge mv pull push rebase reflog remote reset restore revert rm show stash status "
+            "switch tag worktree rev-parse ls-files"
+        ),
+        _words("blame describe diff grep log reflog show status rev-parse ls-files"),
+    ),
+    "gh": (None, _words("view list status diff checks")),
+    "glab": (None, _words("view list status diff")),
+}
+_PROGRAMS["tofu"] = _PROGRAMS["terraform"]
+_PROGRAMS["oc"] = (
+    _PROGRAMS["kubectl"][0]
+    | _words("adm new-app new-project project projects start-build status whoami"),
+    _PROGRAMS["kubectl"][1] | _words("status whoami projects"),
+)
+for _name in ("docker", "podman"):
+    _PROGRAMS[_name] = (
+        _words(
+            "attach build commit compose container cp create diff events exec export history image images "
+            "import info inspect kill load login logout logs network pause plugin port ps pull push rename "
+            "restart rm rmi run save search start stats stop system tag top unpause update version volume wait"
+        ),
+        _words("diff events history images info inspect logs ps port search stats top version ls"),
+    )
+
+_CODE_ONLY = frozenset({"git", "docker", "podman", "helm", "ansible"})
+
+_PROGRAM = re.compile(
+    r"(?<![\w./-])("
+    + "|".join(re.escape(p) for p in sorted(_PROGRAMS, key=len, reverse=True))
+    + r")(?![\w-])"
+)
+_TOKEN = re.compile(r"[ \t]+(-{1,2}[A-Za-z0-9][\w-]*(?:=\S*)?|\S+)")
+_WORD = re.compile(r"[a-z][a-z0-9-]*")
+_ARG_CHARS = re.compile(
+    r"[/\d:=@.\\\['\"`]"
+)  # `[` too: G3 leaves `[link removed]` where a URL stood
+_QUOTED_WORD = re.compile(r"[a-z][a-z0-9-]*[\"'`)\]]+")
+_WORD_THEN_STOP = re.compile(r"[a-z][a-z0-9-]*[.,;:!?]")
+_SHELL_OP = re.compile(r"[ \t]*(?:[;|&]|$)", re.MULTILINE)
+_CODE_BEFORE = re.compile(r"(?:^|[`$;|&(]|\bsudo)[ \t]*$", re.MULTILINE)
+
+# Write shapes with no read form to recognise (WARDEN's, plus the INSERT/GRANT/CREATE and PowerShell additions).
+_WRITE_SHAPES = re.compile(
+    r"\bpg_(?:cancel|terminate)_backend\s*\("
     r"|\bALTER\s+(?:DATABASE|INDEX|ROLE|SCHEMA|TABLE|USER)\s+\S+\s+(?:ADD|ALTER|ATTACH|DETACH|DISABLE|DROP|ENABLE|"
     r"OWNER|RENAME|RESET|SET|VALIDATE)\b|\bALTER\s+SYSTEM\s+(?:SET|RESET)\b"
     r"|\b(?:DROP|TRUNCATE)\s+(?:DATABASE|INDEX|ROLE|SCHEMA|TABLE|USER)\s+(?:IF\s+EXISTS\s+)?[\w.\"]+"
-    r"|\bDELETE\s+FROM\s+[\w.\"]+|\bUPDATE\s+[\w.\"]+\s+SET\b"
+    r"|\bCREATE\s+(?:DATABASE|INDEX|ROLE|SCHEMA|TABLE|USER)\s+[\w.\"]+"
+    r"|\bDELETE\s+FROM\s+[\w.\"]+|\bUPDATE\s+[\w.\"]+\s+SET\b|\bINSERT\s+INTO\s+[\w.\"]+"
+    r"|\b(?:GRANT|REVOKE)\s+[A-Z, ]+\s+ON\b"
+    r"|\b(?!Get-)[A-Z][a-z]+-Az[A-Z][A-Za-z]*\b"
+    r"|\b(?:Remove-Item|Stop-Service|Stop-Process|Restart-Service|Restart-Computer|Stop-Computer)\b"
     r"|\brm\s+-[a-zA-Z]*[rRf][a-zA-Z]*(?=\s+\S)"
     r"|\b(?:curl|wget)\s[^|\n]*\|\s*(?:sudo\s+)?(?:ba|z)?sh\b"
 )
-WITHHELD = "[command withheld (G4)]"
+
+
+def _command_end(text: str, prog: str, start: int) -> tuple[int, bool] | None:
+    """Where the command that starts at `start` ends, and whether it is read-only; None for a story."""
+    pos, chain, flag, arg, ended = start, [], False, False, False
+    for _ in range(_MAX_TOKENS):
+        m = _TOKEN.match(text, pos)
+        if (
+            m is None
+        ):  # the line or text ends here, or a quote or bracket follows the word: decided below
+            break
+        tok = m.group(1)
+        stop = _WORD_THEN_STOP.fullmatch(tok)  # `nginx.` / `web,`: the command ends with the clause
+        if tok.startswith("-"):
+            flag = True
+        elif stop or _WORD.fullmatch(tok):
+            chain.append(tok.rstrip(".,;:!?"))
+            if len(chain) > _MAX_WORDS:
+                return None  # it runs on into prose: a story
+        elif _ARG_CHARS.search(tok) and not _QUOTED_WORD.fullmatch(tok):
+            arg = ended = True  # an argument: a path, a name with digits, key=value, a quoted value
+        else:  # `Lambda`, `restart'`: prose, unless flags already made it a command
+            break
+        pos = m.end()
+        if stop or ended:
+            ended = True
+            break
+    else:
+        ended = True
+    ended = ended or flag or bool(_SHELL_OP.match(text, pos))
+    own, read = _PROGRAMS[prog]
+    if (
+        not ended
+        or not (chain or flag or arg)
+        or (own is not None and not any(t in own for t in chain))
+    ):
+        return None
+    if prog in _CODE_ONLY and not flag and not _CODE_BEFORE.search(text, 0, start - len(prog)):
+        return None
+    writes = any(t in _WRITE_VERBS for t in chain)
+    if prog == "aws":
+        readonly = not writes and any(t.startswith(_AWS_READ_PREFIXES) or t in read for t in chain)
+    else:
+        readonly = not writes and any(t in read for t in chain)
+    return pos, readonly
+
+
+def withhold_commands(text: str) -> str:
+    """G4 over one piece of model-derived text: each command not positively recognised as read-only is replaced
+    where it stands (the program and its subcommand chain), so what is left cannot be pasted and run."""
+    text = _WRITE_SHAPES.sub(WITHHELD, text)
+    out, last = [], 0
+    for m in _PROGRAM.finditer(text):
+        if m.start() < last:
+            continue
+        found = _command_end(text, m.group(1), m.end())
+        if found is None or found[1]:
+            continue
+        out += [text[last : m.start()], WITHHELD]
+        last = found[0]
+    return "".join(out) + text[last:]
