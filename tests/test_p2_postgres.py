@@ -111,6 +111,11 @@ def fresh_dsn():
     yield from pg_schema(migrated=False)
 
 
+@pytest.fixture
+def migrated_dsn():
+    yield from pg_schema()
+
+
 def test_two_concurrent_migrate_runs_apply_once(fresh_dsn):
     applied = []
 
@@ -169,3 +174,57 @@ def test_cli_kill_switch_reaches_every_process(cfg_dir, monkeypatch, capsys):
         assert cli.main(["--config", str(cfg_dir), "limits", "reset", "--by", "user:a"]) == 0
         assert other.get_kill_switch().on is False
         other._db.close()
+
+
+def test_plan_hash_survives_a_non_utc_timestamp():
+    from datetime import UTC, datetime, timedelta, timezone
+
+    from hadavin_sdk.models import Target
+
+    ist = timezone(timedelta(hours=5, minutes=30))
+    kw = {
+        "plan_id": "pln-x",
+        "run_id": "run-x",
+        "agent_id": "a",
+        "action_id": "x",
+        "action_version": 1,
+        "risk_class": "reversible",
+        "inputs": {},
+        "target": Target(system="s"),
+        "idempotency_key": "k",
+        "expected_outcome": "o",
+    }
+    at = datetime(2026, 10, 31, 1, 0, tzinfo=ist)
+    assert Plan(**kw, created_at=at).hash() == Plan(**kw, created_at=at.astimezone(UTC)).hash()
+    with pytest.raises(ValueError, match="timezone-aware"):
+        Plan(**kw, created_at=datetime(2026, 10, 31))  # noqa: DTZ001 - the naive value under test
+
+
+def test_cas_race_across_two_connections_has_one_winner(migrated_dsn):
+    from hadavin_sdk.backends import make
+    from hadavin_sdk.models import RunState
+    from hadavin_sdk.store.protocol import StaleState
+
+    dsn = migrated_dsn
+    settings = PostgresSettings(kind="postgres", dsn_secret_name="pg-dsn")  # noqa: S106 - a name
+    a, b = (make("store", settings, FakeSecretProvider({"pg-dsn": dsn})) for _ in range(2))
+    run = Run(agent_id="a", principal_id="p", trigger_kind="event", trigger_ref="t")
+    a.create_run(run)
+    results, gate = [], threading.Barrier(2)
+
+    def race(store):
+        gate.wait()
+        try:
+            store.transition(run.run_id, RunState.RECEIVED, RunState.WORKING)
+            results.append("won")
+        except StaleState:
+            results.append("stale")
+
+    threads = [threading.Thread(target=race, args=(s,)) for s in (a, b)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(results) == ["stale", "won"]
+    a._db.close()
+    b._db.close()
