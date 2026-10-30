@@ -57,12 +57,14 @@ class FakeSystem:
                 return True
 
             def do_POST(self):
+                # Read the body before any reply (401, 404, 302): replying first and closing with unread
+                # bytes makes the client see a connection reset instead of the status (a flaky test).
+                raw = self.rfile.read(int(self.headers.get("Content-Length") or 0))
                 if not self._authed():
                     return
                 if urlsplit(self.path).path != "/records":
                     return self._send(404)
-                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                # Body read first, so the client sees the 302, not a connection reset.
+                body = json.loads(raw)
                 if system.redirect_create:
                     self.send_response(302)
                     self.send_header("Location", f"http://127.0.0.1:{system.port}/stolen")

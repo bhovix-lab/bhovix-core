@@ -5,10 +5,13 @@ The regex detector rewrites WARDEN's tripwire + STEER idea for documents: phrase
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Protocol
 
 from hadavin_sdk.models import Verdict
+
+_LOG = logging.getLogger("hadavin_sdk.guard")
 
 
 class Detector(Protocol):
@@ -57,5 +60,13 @@ def injection_check(detector: Detector, text: str, source: str) -> Verdict:
     """Any detector error is a flag (guard_unavailable), never a pass."""
     try:
         return detector.check(text, source)
-    except Exception:  # noqa: BLE001 - fail closed on anything
+    except Exception as exc:  # noqa: BLE001 - fail closed on anything
+        # The cause is logged (class and message, never the text checked) so a broken detector is
+        # diagnosable, e.g. a custom detector returning a score outside 0..1.
+        _LOG.warning(
+            "detector %s failed, run flagged: %s: %s",
+            type(detector).__name__,
+            type(exc).__name__,
+            str(exc)[:300],
+        )
         return Verdict(flagged=True, score=1.0, backend="error", reason_code="guard_unavailable")

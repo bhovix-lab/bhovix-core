@@ -220,7 +220,9 @@ def test_missing_verify_hook_needs_a_person(cfg_dir):
 
     hooks = Hooks(
         request_approval=lambda *a: None,
-        execute=lambda p, d, a: RunResult(outcome="succeeded", external_ref="rec-001"),
+        execute=lambda p, d, a, heartbeat=None: RunResult(
+            outcome="succeeded", external_ref="rec-001"
+        ),
     )
     rt, cfg = build_rt(cfg_dir, hooks)
     run = rt.handle("test-agent", "svc:test-agent", (cfg.inputs_dir / "create.txt").read_bytes())

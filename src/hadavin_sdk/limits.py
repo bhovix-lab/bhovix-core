@@ -21,7 +21,7 @@ class Limits:
         reasons = []
         if self.store.get_kill_switch().on:
             reasons.append("kill_switch")
-        day, month = self.store.add_spend(agent_id, now().date(), Decimal(0))
+        day, month = self.store.spend_totals(agent_id, now().date())  # a read, no write
         budget = self.registry.agents[agent_id].budget_usd
         if day >= budget.daily:
             reasons.append("daily_budget")
