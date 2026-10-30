@@ -2,41 +2,27 @@
 
 Rewritten, not ported: WARDEN `settings.py` loads secrets into `os.environ`, which would hand every secret to
 every module. Here a value is returned to the one caller that asked (the executor, or a backend through its
-bound platform resolver) and cached for `ttl_s` seconds (0 = no cache), so a rotated value is picked up
-within one TTL. Values are never logged; errors name the secret and the error class only.
+bound platform resolver). Cache, single-flight and logging rules: `secrets_cache.CachedSecrets`.
 """
 
 from __future__ import annotations
 
-import threading
 import time
 from collections.abc import Callable
 from typing import Any
 
+import boto3  # the extra: a missing install fails at start-up with the hint (backends.make)
+
+from hadavin_sdk.actions.secrets_cache import CachedSecrets
 from hadavin_sdk.errors import ConfigError
 
 
-class SecretsManagerProvider:
+class SecretsManagerProvider(CachedSecrets):
     def __init__(
         self, client: Any, ttl_s: float = 300, clock: Callable[[], float] = time.monotonic
     ) -> None:
-        self._client, self.ttl_s, self._clock = client, ttl_s, clock
-        self._cache: dict[str, tuple[float, str]] = {}
-        self._lock = threading.Lock()
-
-    def get(self, name: str) -> str:
-        # One refresh at a time: two concurrent fetches straddling a rotation could otherwise let the older
-        # value land last and be cached for a whole TTL. ponytail: one lock for every name, per-name locks if
-        # fetch latency ever matters (fetches are rare: once per name per TTL).
-        with self._lock:
-            now = self._clock()
-            hit = self._cache.get(name)
-            if hit is not None and now < hit[0]:
-                return hit[1]
-            value = self._fetch(name)
-            if self.ttl_s > 0:
-                self._cache[name] = (now + self.ttl_s, value)
-            return value
+        super().__init__(ttl_s, clock)
+        self._client = client
 
     def _fetch(self, name: str) -> str:
         try:
@@ -53,7 +39,5 @@ class SecretsManagerProvider:
 
 
 def build(settings, deps) -> SecretsManagerProvider:
-    import boto3  # the `aws` extra
-
     client = boto3.client("secretsmanager", region_name=settings.region)
     return SecretsManagerProvider(client, settings.ttl_s)
