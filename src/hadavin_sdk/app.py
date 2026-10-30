@@ -16,7 +16,7 @@ from hadavin_sdk.approvals import Approvals, Channel
 from hadavin_sdk.audit import AuditSink
 from hadavin_sdk.backends import make, platform_secrets
 from hadavin_sdk.config import Config, load_config
-from hadavin_sdk.guard.injection import Detector
+from hadavin_sdk.guard.injection import Detector, combine
 from hadavin_sdk.limits import Limits
 from hadavin_sdk.models import now
 from hadavin_sdk.registry import Registry, load_registry
@@ -55,10 +55,17 @@ def build(
     secrets = secrets or make("secrets", b.secrets)
     executor_names = {c.executor.secret_name for c in reg.contracts.values()}
     platform_secrets.check(secrets, [s for _, s in b.entries()], executor_names)
+    signer = make("signer", b.signer, secrets)
     store = make("store", b.store, secrets)
-    audit = make("audit", b.audit, secrets, store=store)
+    audit = make("audit", b.audit, secrets, store=store, signer=signer)
     llm = make("llm", b.llm, secrets, routes=cfg.routes)
-    detector = detector or make("detector", b.detector[0], secrets, llm=llm)
+    summary_detector = detector
+    if detector is None:
+        members = [make("detector", d, secrets, llm=llm) for d in b.detector]
+        detector = combine(members)
+        # The approval summary screen has no agent to charge, so it runs the unmetered members only; the judge
+        # screens the document and tool output, where untrusted text enters (config refuses a judge alone).
+        summary_detector = combine([m for m in members if m.backend != "llm_judge"])
     channel = channel or make("channel", b.channel, secrets, store=store)
     limits = Limits(store, audit, reg)
     executor = Executor(reg, secrets, timeout_s=timeout_s)
@@ -70,7 +77,7 @@ def build(
         channel,
         lambda run_id, status, d: holder["rt"].on_decided(run_id, status, d),
         clock,
-        detector,
+        summary_detector,
     )
     hooks = Hooks(
         request_approval=approvals.request,

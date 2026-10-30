@@ -27,11 +27,6 @@
   by `tick`), one decision per approval step, an exact month spend counter, the kill switch row (a missing row
   reads as ON), `tick_state`.
 
-### Changed (slice 2 P7)
-- Postgres TLS: `sslmode` setting; `require` by default for non-local hosts and always with `iam_auth`; a
-  runtime DSN with a password is refused with `iam_auth`.
-- The runtime role gets SELECT, INSERT only on `approval_decisions`, `dead_letters`, `gate_decisions`.
-- Gate decisions are written once per run; a run stuck in `RECEIVED` can go to `NEEDS_PERSON`.
 - `postgres` store (`pip install hadavin-sdk[pg]`, slice 2 P2): `backends.store: {kind: postgres,
   dsn_secret_name, iam_auth, region}`; compare-and-set in SQL; RDS IAM login with `iam_auth: true`.
 - `hadavin-sdk migrate [--runtime-role R]`: forward-only schema (`store/migrations/0001_core.sql`) applied under
@@ -45,7 +40,22 @@
   `output_schema` is a forced tool call. Model ids that are moving aliases (`sonnet`, `*-latest`) are refused.
   The llm `platform` and `base_url` are part of `config_hash`.
 
+- Detector lists (slice 2 P6): `backends.detector` takes one or more entries (an `llm_judge` never alone); every
+  entry runs and any flag flags the run (max score, the flagging names joined by `+`, the first flag's reason).
+  New kinds, both `slice2-unverified`: `llm_judge` (`route`, `threshold` 0.7; a fixed prompt hashed into
+  `config_hash`, its cost charged to the agent, qualified at its own rate by a non-empty `golden_dir/judge.jsonl`
+  in the evals gate; that file is part of `golden_sha256`) and `bedrock_guardrail`
+  (`guardrail_id`, `guardrail_version`, `region`; the PROMPT_ATTACK filter, extra `aws`).
+
 ### Changed
+- Postgres TLS (slice 2 P7): `verify-full` by default for any non-local host, with the server's CA bundle
+  from `sslrootcert` (a file) or `sslrootcert_secret_name` (a PEM in any secrets backend); an explicit weaker
+  `sslmode` is a dev opt-down. With `iam_auth` only `verify-full`/`verify-ca`, and a runtime DSN with a
+  password is refused.
+- The runtime role gets SELECT, INSERT only on `approval_decisions`, `dead_letters`, `gate_decisions`.
+- Gate decisions are written once per run; a run stuck in `RECEIVED` or `PLAN_READY` can go to `NEEDS_PERSON`.
+- Approver ids carry the channel kind's name (`slack:<id>`, `fake:<id>`); request signing is the shared
+  `approvals/hmac_v0.py`, not borrowed from Slack.
 - `ProviderExhausted` from the model ends the run in `NEEDS_PERSON provider_exhausted` instead of escaping.
 - A provider that refuses the request (`ProviderError`, e.g. a bad key) ends the run in
   `NEEDS_PERSON provider_error`; `ProviderExhausted` is now a `ProviderError`.
@@ -56,6 +66,16 @@
   `NotFound`; `Limits.blocked` no longer writes a zero-spend row.
 - The executor calls a heartbeat before every HTTP attempt, so long retries do not look stuck.
 - `Verdict.score` is bounded to 0..1; a detector failure is logged with its cause (still fails closed).
+
+### Added (slice 2 P3, every kind `slice2-unverified` until the P9 live run)
+- `backends.audit: {kind: chain}`: WARDEN's hash-chained, append-only audit in the store's database, signed
+  checkpoints every `checkpoint_every` rows, and an optional `anchor: {kind: s3_object_lock, bucket, region}`
+  (GOVERNANCE, 1 day by default). `hadavin-sdk audit verify` exits 0 intact, 1 not intact,
+  2 refused (a memory store lives in one process), 3 unreadable.
+- `backends.signer`: `none` (default), `ed25519_local`, `aws_kms`. Start-up signs a probe message.
+- Environment table: prod refuses `ed25519_local` and a chain without an anchor that has `retention_ack: true`;
+  COMPLIANCE mode only in prod with `retention_ack`.
+- `store/migrations/0002_audit_chain.sql` (applied by `hadavin-sdk migrate` with the postgres store).
 
 ### Added (slice 2 P4, `slice2-unverified` until the P9 live run)
 - `backends.secrets: {kind: aws_secrets_manager, region, ttl_s: 300}`: values cached for `ttl_s` (0 = no

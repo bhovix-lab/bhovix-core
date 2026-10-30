@@ -15,6 +15,11 @@ def fake_secrets(settings, deps) -> FakeSecretProvider:
     return FakeSecretProvider({})
 
 
+def no_signer(settings, deps) -> None:
+    # The default: no checkpoints (`local_dir` needs none; `chain` then keeps an unsigned chain).
+    return None
+
+
 def memory_store(settings, deps) -> MemoryStore:
     return MemoryStore()
 

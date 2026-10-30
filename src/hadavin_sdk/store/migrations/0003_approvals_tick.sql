@@ -5,7 +5,10 @@
 ALTER TABLE approval_requests ADD COLUMN sent_at TIMESTAMPTZ;
 ALTER TABLE approval_requests ADD COLUMN channel_ref TEXT;
 
--- One accepted decision per approval step: a second (racing or replayed) one is refused.
+-- One accepted decision per approval step: a second (racing or replayed) one is refused. Older duplicates,
+-- if any, keep only the latest row (the one get_approval_decision already returned).
+DELETE FROM approval_decisions a USING approval_decisions b
+WHERE a.approval_id = b.approval_id AND a.step = b.step AND a.seq < b.seq;
 ALTER TABLE approval_decisions ADD CONSTRAINT approval_decisions_one_per_step UNIQUE (approval_id, step);
 
 -- Month totals kept by the same atomic upsert as the day rows (no sum over rows another writer is adding).

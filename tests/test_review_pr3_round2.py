@@ -180,14 +180,14 @@ def _callback(approval_id, plan_hash, step, user, ts, secret=SECRET):
     }
     body = urlencode({"payload": json.dumps(payload)}).encode()
     sig = hmac.new(secret.encode(), f"v0:{ts}:".encode() + body, hashlib.sha256).hexdigest()
-    return {"X-Slack-Request-Timestamp": str(ts), "X-Slack-Signature": "v0=" + sig}, body
+    return {"X-Hadavin-Request-Timestamp": str(ts), "X-Hadavin-Signature": "v0=" + sig}, body
 
 
 def test_signed_callback_approves_with_verified_identity(app, fake_system):
     p = app.registry.principals
     from hadavin_sdk.identity import Principal
 
-    p["slack:U123"] = Principal(id="slack:U123", kind="person", approver_of=["chain-abc"])
+    p["fake:U123"] = Principal(id="fake:U123", kind="person", approver_of=["chain-abc"])
     run = app.runtime.handle("test-agent", "svc:test-agent", _doc(app, "create.txt"))
     req = _pending(app, run.run_id)
     # the chain names user:a; a verified but different Slack user is not an approver for this step

@@ -91,6 +91,18 @@ class RegexSettings(KindSettings):
     threshold: float = Field(default=0.5, ge=0.0, le=1.0)
 
 
+class JudgeSettings(KindSettings):
+    route: str  # a key of `routes`; checked against them at load
+    threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+
+
+class GuardrailSettings(KindSettings):
+    guardrail_id: str
+    guardrail_version: str
+    region: str = Field(pattern=_NAME)
+    threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+
+
 class LocalDirSettings(KindSettings):
     dir: Path
 
@@ -129,6 +141,33 @@ class AwsSecretsManagerSettings(KindSettings):
     ttl_s: float = Field(default=300, ge=0)  # 0 = no cache
 
 
+class S3ObjectLockSettings(KindSettings):
+    """The chain's anchor. COMPLIANCE only in prod with `retention_ack` (the client agreed retention in
+    writing); prod also needs the ack for GOVERNANCE (config.py, environment table)."""
+
+    kind: Literal["s3_object_lock"]
+    bucket: str
+    region: str
+    mode: Literal["GOVERNANCE", "COMPLIANCE"] = "GOVERNANCE"
+    retain_days: int = Field(default=1, ge=1)
+    retention_ack: bool = False
+
+
+class ChainSettings(KindSettings):
+    anchor: S3ObjectLockSettings | None = None
+    checkpoint_every: int = Field(default=100, ge=1)
+
+
+class Ed25519LocalSettings(KindSettings):
+    private_key_path: Path
+    passphrase_secret_name: str | None = None
+
+
+class AwsKmsSettings(KindSettings):
+    key_id: str
+    region: str
+
+
 class SlackSettings(KindSettings):
     channel_id: str
     signing_secret_name: str
@@ -152,6 +191,7 @@ class Entry:
 
 _BUILTIN = "hadavin_sdk.backends.builtin"
 _UNVERIFIED = "slice2-unverified"
+_SIGNER = "hadavin_sdk.audit.signer"
 
 # Build order (design §4.2): each capability may use only what is built before it, as ALLOWED says.
 TABLE: dict[str, dict[str, Entry]] = {
@@ -167,13 +207,25 @@ TABLE: dict[str, dict[str, Entry]] = {
             status=_UNVERIFIED,
         ),
     },
+    "signer": {
+        "none": Entry(KindSettings, f"{_BUILTIN}:no_signer"),
+        "ed25519_local": Entry(
+            Ed25519LocalSettings, f"{_SIGNER}:build_local", extra="signer", status=_UNVERIFIED
+        ),
+        "aws_kms": Entry(AwsKmsSettings, f"{_SIGNER}:build_kms", extra="aws", status=_UNVERIFIED),
+    },
     "store": {
         "memory": Entry(KindSettings, f"{_BUILTIN}:memory_store"),
         "postgres": Entry(
             PostgresSettings, "hadavin_sdk.store.postgres:build", extra="pg", status=_UNVERIFIED
         ),
     },
-    "audit": {"local_dir": Entry(LocalDirSettings, f"{_BUILTIN}:local_dir_audit")},
+    "audit": {
+        "local_dir": Entry(LocalDirSettings, f"{_BUILTIN}:local_dir_audit"),
+        "chain": Entry(
+            ChainSettings, "hadavin_sdk.audit.chain:build", extra="signer", status=_UNVERIFIED
+        ),
+    },
     "llm": {
         "fake": Entry(FakeLLMSettings, f"{_BUILTIN}:fake_llm"),
         # Every kind below is slice2-unverified until its P9 live run (design 12.1).
@@ -182,7 +234,14 @@ TABLE: dict[str, dict[str, Entry]] = {
         "openai_compat": Entry(OpenAICompatSettings, "hadavin_sdk.llm.openai_compat:make"),
         "gemini": Entry(GeminiSettings, "hadavin_sdk.llm.gemini:make"),
     },
-    "detector": {"regex": Entry(RegexSettings, f"{_BUILTIN}:regex_detector")},
+    "detector": {
+        "regex": Entry(RegexSettings, f"{_BUILTIN}:regex_detector"),
+        # slice2-unverified until the P9 live run (design 12.1).
+        "llm_judge": Entry(JudgeSettings, "hadavin_sdk.guard.judge:make"),
+        "bedrock_guardrail": Entry(
+            GuardrailSettings, "hadavin_sdk.guard.bedrock_guardrail:make", "aws"
+        ),
+    },
     "channel": {
         "fake": Entry(FakeChannelSettings, f"{_BUILTIN}:fake_channel"),
         "slack": Entry(
@@ -194,8 +253,9 @@ TABLE: dict[str, dict[str, Entry]] = {
 # The Deps fields a factory of each capability may see (besides its own bound `resolve`).
 ALLOWED: dict[str, frozenset[str]] = {
     "secrets": frozenset(),
+    "signer": frozenset(),
     "store": frozenset(),
-    "audit": frozenset({"store"}),
+    "audit": frozenset({"store", "signer"}),
     "llm": frozenset({"routes"}),
     "detector": frozenset({"llm"}),
     "channel": frozenset({"store"}),
@@ -204,6 +264,7 @@ ALLOWED: dict[str, frozenset[str]] = {
 # Capabilities a config may leave out, and the kind they get.
 DEFAULTS: dict[str, str] = {
     "secrets": "fake",
+    "signer": "none",
     "store": "memory",
     "detector": "regex",
     "channel": "fake",
@@ -221,3 +282,5 @@ DEV_ONLY: frozenset[tuple[str, str]] = frozenset(
         ("audit", "local_dir"),
     }
 )
+# Kinds refused only in `prod` (design 4.6); the anchor rules are in config.py.
+NOT_PROD: frozenset[tuple[str, str]] = frozenset({("signer", "ed25519_local")})

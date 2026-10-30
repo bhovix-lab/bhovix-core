@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import re
+from decimal import Decimal
 from typing import Protocol
 
 from hadavin_sdk.models import Verdict
@@ -56,6 +57,30 @@ class RegexDetector:
         )
 
 
+class AnyOf:
+    """A detector list (design 4.3): every entry runs, and any flag flags the run. The combined verdict has the
+    max score, the names that flagged joined by `+`, the first flag's reason and the summed cost. One entry's
+    error is that entry's flag (guard_unavailable); the others still run."""
+
+    def __init__(self, detectors: list[Detector]) -> None:
+        self.detectors = detectors
+
+    def check(self, text: str, source: str) -> Verdict:
+        verdicts = [injection_check(d, text, source) for d in self.detectors]
+        flagged = [v for v in verdicts if v.flagged]
+        return Verdict(
+            flagged=bool(flagged),
+            score=max(v.score for v in verdicts),
+            backend="+".join(v.backend for v in flagged or verdicts),
+            reason_code=flagged[0].reason_code if flagged else None,
+            cost_usd=sum((v.cost_usd for v in verdicts), Decimal(0)),
+        )
+
+
+def combine(detectors: list[Detector]) -> Detector:
+    return detectors[0] if len(detectors) == 1 else AnyOf(detectors)
+
+
 def injection_check(detector: Detector, text: str, source: str) -> Verdict:
     """Any detector error is a flag (guard_unavailable), never a pass."""
     try:
@@ -69,4 +94,7 @@ def injection_check(detector: Detector, text: str, source: str) -> Verdict:
             type(exc).__name__,
             str(exc)[:300],
         )
-        return Verdict(flagged=True, score=1.0, backend="error", reason_code="guard_unavailable")
+        # Named after the detector that failed, so a list's verdict says which one.
+        name = getattr(detector, "backend", None)
+        name = name if isinstance(name, str) and name else "error"
+        return Verdict(flagged=True, score=1.0, backend=name, reason_code="guard_unavailable")

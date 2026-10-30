@@ -76,9 +76,10 @@ def test_defaults_fill_optional_capabilities(cfg_dir):
     )
 
 
-def test_detector_list_longer_than_one_refused(cfg_dir):
-    _edit(cfg_dir, lambda d: d["backends"].update(detector=["regex", "regex"]))
-    with pytest.raises(ConfigError, match="exactly one detector"):
+def test_an_empty_detector_list_refused(cfg_dir):
+    # P6 replaced "a list longer than one is refused" with list semantics (tests/test_p6_detectors.py).
+    _edit(cfg_dir, lambda d: d["backends"].update(detector=[]))
+    with pytest.raises(ConfigError, match="at least one detector"):
         load_config(cfg_dir)
 
 

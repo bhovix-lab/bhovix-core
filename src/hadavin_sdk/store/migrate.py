@@ -30,6 +30,13 @@ TABLES = (
 )
 # Written once, never changed: the runtime role gets SELECT, INSERT only (no UPDATE).
 APPEND_ONLY = frozenset({"approval_decisions", "dead_letters", "gate_decisions"})
+# The chain audit's tables (0002): rows and checkpoints are read and appended only (the append-only triggers
+# also refuse UPDATE/DELETE/TRUNCATE to any role); reconcile deletes an outbox row once it is in the chain.
+AUDIT_GRANTS = {
+    "audit_entries": "SELECT, INSERT",
+    "audit_checkpoints": "SELECT, INSERT",
+    "audit_outbox": "SELECT, INSERT, DELETE",
+}
 _LOCK = int.from_bytes(b"hadvnmig", "big") >> 1  # one fixed key for every migrate run
 _ROLE = re.compile(r"[a-z_][a-z0-9_]{0,62}")
 
@@ -76,6 +83,13 @@ def migrate(
             for table in TABLES:
                 db.execute(sql.SQL("REVOKE ALL ON {} FROM {}").format(sql.Identifier(table), role))
                 privileges = "SELECT, INSERT" if table in APPEND_ONLY else "SELECT, INSERT, UPDATE"
+                db.execute(
+                    sql.SQL("GRANT {} ON {} TO {}").format(
+                        sql.SQL(privileges), sql.Identifier(table), role
+                    )
+                )
+            for table, privileges in AUDIT_GRANTS.items():
+                db.execute(sql.SQL("REVOKE ALL ON {} FROM {}").format(sql.Identifier(table), role))
                 db.execute(
                     sql.SQL("GRANT {} ON {} TO {}").format(
                         sql.SQL(privileges), sql.Identifier(table), role

@@ -5,11 +5,11 @@ An agent with no green run for its current (model id, prompt hash, config hash) 
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 
-from hadavin_sdk.config import confined
+from hadavin_sdk.config import ConfigError, confined
+from hadavin_sdk.guard import judge
 from hadavin_sdk.llm.protocol import LLM
 from hadavin_sdk.models import GateRun
 from hadavin_sdk.registry import Registry
@@ -46,17 +46,29 @@ def gate(registry: Registry, llm: LLM, agent_id: str) -> GateRun:
         passed += got == case["expected"]
     n = len(cases)
     rate = passed / n if n else 0.0
+    # An llm_judge is qualified by its own golden set on the same model client, at its own rate (design 4.3):
+    # the agent's passes never hide a judge's failures, and an empty judge set qualifies nothing.
+    judges_green = True
+    for d in cfg.backends.detector:
+        if d.kind == "llm_judge":
+            path = confined(cfg.golden_dir, "judge.jsonl")
+            if not path.is_file():
+                raise ConfigError("llm_judge needs its golden set: golden_dir/judge.jsonl")
+            ok, total = judge.qualify(judge.JudgeDetector(llm, d.route, d.threshold), path)
+            judges_green = judges_green and total > 0 and ok / total >= cfg.eval_threshold
     run = GateRun(
         agent_id=agent_id,
         model_id=cfg.routes[agent.model_route].model_id,
         prompt_sha256=registry.prompt_sha256(agent_id),
         config_hash=registry.config_hash(agent_id),
-        golden_sha256=hashlib.sha256(golden_bytes).hexdigest(),
+        golden_sha256=registry.golden_sha256(
+            agent_id
+        ),  # with judge.jsonl when a judge is configured
         n=n,
         passed=passed,
         pass_rate=rate,
         threshold=cfg.eval_threshold,
-        green=n > 0 and rate >= cfg.eval_threshold,
+        green=n > 0 and rate >= cfg.eval_threshold and judges_green,
     )
     if run.green:  # append-only log: one green run per line
         path = cfg.root / QUALIFIED

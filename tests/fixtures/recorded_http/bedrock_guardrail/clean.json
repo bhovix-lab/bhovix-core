@@ -1,0 +1,18 @@
+{
+  "request_match": {"method": "POST"},
+  "status": 200,
+  "headers": {},
+  "body": {
+    "usage": {
+      "topicPolicyUnits": 0,
+      "contentPolicyUnits": 1,
+      "wordPolicyUnits": 0,
+      "sensitiveInformationPolicyUnits": 0,
+      "sensitiveInformationPolicyFreeUnits": 0,
+      "contextualGroundingPolicyUnits": 0
+    },
+    "action": "NONE",
+    "outputs": [],
+    "assessments": [{}]
+  }
+}

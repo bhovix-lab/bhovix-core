@@ -52,7 +52,7 @@ def _callback(req, user, ts, verdict="approve", secret=SIG):
     body = urlencode({"payload": json.dumps({"user": {"id": user}, "actions": [{"value": value}]})})
     body = body.encode()
     sig = hmac.new(secret.encode(), f"v0:{ts}:".encode() + body, hashlib.sha256).hexdigest()
-    return {"X-Slack-Request-Timestamp": str(ts), "X-Slack-Signature": "v0=" + sig}, body
+    return {"X-Hadavin-Request-Timestamp": str(ts), "X-Hadavin-Signature": "v0=" + sig}, body
 
 
 def _waiting(app):
@@ -258,10 +258,8 @@ def test_receiver_records_and_never_executes(app, fake_system):
     p = app.registry.principals
     from hadavin_sdk.identity import Principal
 
-    p["slack:UAPPROVER"] = Principal(
-        id="slack:UAPPROVER", kind="person", approver_of=[req.chain_id]
-    )
-    req.steps[0].approver_ids.append("slack:UAPPROVER")
+    p["fake:UAPPROVER"] = Principal(id="fake:UAPPROVER", kind="person", approver_of=[req.chain_id])
+    req.steps[0].approver_ids.append("fake:UAPPROVER")
     app.store.save_approval_request(req)
     assert handle_slack_action(app.approvals, *_callback(req, "UAPPROVER", now)) == (200, b"")
     assert app.store.get_approval_request(req.approval_id).status == "APPROVED"
@@ -529,3 +527,16 @@ def test_slack_app_manifest_is_least_privilege():
     assert manifest["oauth_config"]["scopes"] == {"bot": ["chat:write"]}
     assert manifest["settings"]["interactivity"]["request_url"].endswith("/slack/actions")
     assert manifest["settings"]["org_deploy_enabled"] is False
+
+
+def test_signing_headers_do_not_cross_channels():
+    from hadavin_sdk.approvals import hmac_v0
+
+    value = "apr-1|h|0|approve"
+    body = urlencode({"payload": json.dumps({"user": {"id": "U9"}, "actions": [{"value": value}]})})
+    body, ts = body.encode(), int(time.time())
+    slack_signed = hmac_v0.sign(body, ts, SIG, "X-Slack")
+    assert FakeChannel(SIG).parse_decision(slack_signed, body, ts) is None
+    fake_signed = hmac_v0.sign(body, ts, SIG, FakeChannel.header_prefix)
+    assert FakeChannel(SIG).parse_decision(fake_signed, body, ts).approver_id == "fake:U9"
+    assert SlackChannel("C0", TOKEN, SIG).parse_decision(fake_signed, body, ts) is None

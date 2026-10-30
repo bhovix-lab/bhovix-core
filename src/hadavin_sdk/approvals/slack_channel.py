@@ -29,6 +29,7 @@ class SlackError(RuntimeError):
 
 class SlackChannel:
     name = "slack"
+    header_prefix = slack.HEADER_PREFIX
 
     def __init__(
         self,

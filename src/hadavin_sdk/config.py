@@ -14,7 +14,7 @@ import yaml
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from hadavin_sdk.backends.table import DEFAULTS, DEV_ONLY, TABLE, KindSettings
+from hadavin_sdk.backends.table import DEFAULTS, DEV_ONLY, NOT_PROD, TABLE, KindSettings
 from hadavin_sdk.errors import ConfigError
 
 __all__ = ["Backends", "Config", "ConfigError", "Route", "confined", "load_config", "url_allowed"]
@@ -46,6 +46,7 @@ class Backends(_Strict):
     """One validated settings model per capability (built by `parse_backends`, never from raw YAML)."""
 
     secrets: KindSettings
+    signer: KindSettings
     store: KindSettings
     audit: KindSettings
     llm: KindSettings
@@ -116,12 +117,13 @@ def parse_backends(raw: Any, root: Path) -> Backends:
         value = raw.get(cap, DEFAULTS.get(cap))
         if cap == "detector":
             items = value if isinstance(value, list) else [value]
-            if len(items) != 1:
-                # ponytail: list semantics (any flags, max score) arrive with slice 2 P6; one entry until then.
-                raise ConfigError(
-                    "backends.detector: exactly one detector until detector lists (P6)"
-                )
-            built[cap] = (_one(cap, items[0], root),)
+            if not items:  # every entry runs and any flag flags the run (guard.injection.AnyOf)
+                raise ConfigError("backends.detector: list at least one detector")
+            built[cap] = tuple(_one(cap, item, root) for item in items)
+            if all(d.kind == "llm_judge" for d in built[cap]):
+                # The judge reads attacker text and can be steered to say "clean": a tripwire beside
+                # another detector, never the only one (design 4.3, 10).
+                raise ConfigError("backends.detector: llm_judge needs another detector beside it")
         else:
             built[cap] = _one(cap, value, root)
     return Backends(**built)
@@ -163,6 +165,9 @@ class Config(_Strict):
 
     @model_validator(mode="after")
     def _cross_checks(self) -> Config:
+        for d in self.backends.detector:  # llm_judge names a route
+            if getattr(d, "route", None) is not None and d.route not in self.routes:
+                raise ValueError(f"backends.detector {d.kind}: unknown route {d.route!r}")
         for name, system in self.systems.items():
             if not url_allowed(system.base_url, self.allow_insecure_loopback):
                 raise ValueError(
@@ -178,7 +183,27 @@ class Config(_Strict):
                 raise ValueError(
                     f"environment {self.environment}: refused outside dev: {', '.join(refused)}"
                 )
+        if refused := _anchor_refusals(self.environment, self.backends):
+            raise ValueError(f"environment {self.environment}: refused: {', '.join(refused)}")
         return self
+
+
+def _anchor_refusals(environment: str, b: Backends) -> list[str]:
+    """Environment table (design 4.6): prod needs a non-local signer and an anchor whose retention the client
+    agreed (`retention_ack`); COMPLIANCE mode (undeletable even by the account root) only then."""
+    anchor = getattr(b.audit, "anchor", None)
+    refused = []
+    if (
+        anchor is not None
+        and anchor.mode == "COMPLIANCE"
+        and not (environment == "prod" and anchor.retention_ack)
+    ):
+        refused.append("anchor mode COMPLIANCE outside prod or without retention_ack")
+    if environment == "prod":
+        refused += [f"{c}: {s.kind}" for c, s in b.entries() if (c, s.kind) in NOT_PROD]
+        if b.audit.kind == "chain" and (anchor is None or not anchor.retention_ack):
+            refused.append("audit chain without an anchor with retention_ack")
+    return refused
 
 
 def _read_yaml(path: Path) -> dict:
