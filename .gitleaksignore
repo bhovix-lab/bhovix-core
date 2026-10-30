@@ -1,0 +1,11 @@
+# Fake credential shapes in WARDEN tests ported in commit b11c081 (slice 2 P0). They are test fixtures, not
+# secrets; the next commit rebuilds every one from parts (as WARDEN tests/fakes.py does), so only this one
+# historical commit needs these entries. New entries need the same reason and the owner's review.
+b11c081b47f783de48f5a97919227ebd63cc61c7:tests/warden_port/test_redaction_review.py:curl-auth-user:47
+b11c081b47f783de48f5a97919227ebd63cc61c7:tests/warden_port/test_redaction.py:slack-app-token:384
+b11c081b47f783de48f5a97919227ebd63cc61c7:tests/warden_port/test_redaction.py:generic-api-key:76
+b11c081b47f783de48f5a97919227ebd63cc61c7:tests/warden_port/test_redaction.py:generic-api-key:79
+b11c081b47f783de48f5a97919227ebd63cc61c7:tests/warden_port/test_redaction.py:generic-api-key:107
+b11c081b47f783de48f5a97919227ebd63cc61c7:tests/warden_port/test_redaction.py:generic-api-key:120
+b11c081b47f783de48f5a97919227ebd63cc61c7:tests/warden_port/test_redaction.py:generic-api-key:151
+b11c081b47f783de48f5a97919227ebd63cc61c7:tests/warden_port/test_redaction.py:generic-api-key:382

@@ -44,7 +44,7 @@ def test_status_codes_and_common_words_are_not_rewritten():
         ("run --password '" + HUNTER2 + "'", HUNTER2),
         ('argv ["--password","pw4411"]', "pw4411"),
         ("redis-cli -h db -a Redis5ecret ping", "Redis5ecret"),
-        ("curl -u admin:Curl5ecret https://x", "Curl5ecret"),
+        ("curl -u admin:" + "Curl5" + "ecret https://x", "Curl5" + "ecret"),
         ("sshpass -p Ssh5ecret ssh host", "Ssh5ecret"),
         ("docker login -u me -p Dock5ecret reg", "Dock5ecret"),
         ("whsec_abcdef+b5sSYspob7oD/xyz", "b5sSYspob7oD"),
