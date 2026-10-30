@@ -5,15 +5,15 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from bhovix_core import cli, evals
-from bhovix_core.actions.secrets import FakeSecretProvider
-from bhovix_core.app import build, make_llm
-from bhovix_core.audit import AuditUnavailable
-from bhovix_core.config import load_config
-from bhovix_core.guard import EgressRefused, egress_check
-from bhovix_core.models import ApprovalDecision, RunState, Verdict
-from bhovix_core.registry import load_registry
-from bhovix_core.runtime.agent_loop import Unqualified
+from hadavin_sdk import cli, evals
+from hadavin_sdk.actions.secrets import FakeSecretProvider
+from hadavin_sdk.app import build, make_llm
+from hadavin_sdk.audit import AuditUnavailable
+from hadavin_sdk.config import load_config
+from hadavin_sdk.guard import EgressRefused, egress_check
+from hadavin_sdk.models import ApprovalDecision, RunState, Verdict
+from hadavin_sdk.registry import load_registry
+from hadavin_sdk.runtime.agent_loop import Unqualified
 
 S = RunState
 T0 = datetime(2026, 10, 30, 9, 0, tzinfo=UTC)
@@ -248,7 +248,7 @@ def test_in_process_reset_is_audited(app):
 
 
 def test_golden_input_ref_cannot_escape_inputs_dir(cfg_dir):
-    from bhovix_core.config import ConfigError
+    from hadavin_sdk.config import ConfigError
 
     golden = cfg_dir.parent / "golden" / "test-agent.jsonl"
     golden.write_text(
@@ -261,7 +261,7 @@ def test_golden_input_ref_cannot_escape_inputs_dir(cfg_dir):
 def test_prompt_file_cannot_escape_config_dir(cfg_dir):
     import yaml
 
-    from bhovix_core.config import ConfigError
+    from hadavin_sdk.config import ConfigError
 
     path = cfg_dir / "agents.yaml"
     data = yaml.safe_load(path.read_text(encoding="utf-8"))

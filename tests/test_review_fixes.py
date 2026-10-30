@@ -5,12 +5,12 @@ from datetime import timedelta
 import pytest
 import yaml
 
-from bhovix_core.actions.executor import Executor
-from bhovix_core.actions.secrets import FakeSecretProvider
-from bhovix_core.audit import AuditUnavailable, LocalDirSink
-from bhovix_core.config import ConfigError, load_config
-from bhovix_core.models import AuditEvent, RunState, ToolCall
-from bhovix_core.registry import load_registry
+from hadavin_sdk.actions.executor import Executor
+from hadavin_sdk.actions.secrets import FakeSecretProvider
+from hadavin_sdk.audit import AuditUnavailable, LocalDirSink
+from hadavin_sdk.config import ConfigError, load_config
+from hadavin_sdk.models import AuditEvent, RunState, ToolCall
+from hadavin_sdk.registry import load_registry
 from tests.test_executor import _approved, _plan
 from tests.test_s5_runtime import build
 from tests.test_s6_approvals import _d, _request, env  # noqa: F401 - env is a fixture
@@ -128,7 +128,7 @@ def test_base_url_scheme(cfg_dir, url, ok):
 
 # config.py: every start-up failure is a ConfigError
 def test_missing_config_dir_env_is_config_error(monkeypatch):
-    monkeypatch.delenv("BHOVIX_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("HADAVIN_CONFIG_DIR", raising=False)
     with pytest.raises(ConfigError):
         load_config()
 
@@ -180,7 +180,7 @@ def test_missing_id_is_config_error(cfg_dir):
 )
 def test_bad_proposal_needs_a_person(cfg_dir, call):
     rt, _ = build(cfg_dir)
-    from bhovix_core.models import Run
+    from hadavin_sdk.models import Run
 
     run = Run(
         agent_id="test-agent", principal_id="svc:test-agent", trigger_kind="event", trigger_ref="t"
@@ -194,8 +194,8 @@ def test_bad_proposal_needs_a_person(cfg_dir, call):
 # agent_loop.py: hook exceptions never leave EXECUTING or VERIFYING
 @pytest.mark.parametrize("which", ["execute", "verify", "rollback"])
 def test_hook_exceptions_end_in_a_final_state(cfg_dir, which):
-    from bhovix_core.models import RunResult
-    from bhovix_core.runtime.agent_loop import Hooks
+    from hadavin_sdk.models import RunResult
+    from hadavin_sdk.runtime.agent_loop import Hooks
 
     def boom(*a, **k):
         raise RuntimeError("hook failed")

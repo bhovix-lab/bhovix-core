@@ -3,10 +3,10 @@
 import pytest
 import yaml
 
-from bhovix_core.actions.authorizer import authorize
-from bhovix_core.config import ConfigError, load_config
-from bhovix_core.models import Plan, Target
-from bhovix_core.registry import load_registry
+from hadavin_sdk.actions.authorizer import authorize
+from hadavin_sdk.config import ConfigError, load_config
+from hadavin_sdk.models import Plan, Target
+from hadavin_sdk.registry import load_registry
 
 
 def _reg(cfg_dir):

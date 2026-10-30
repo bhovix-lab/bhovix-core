@@ -2,8 +2,8 @@
 
 import pytest
 
-from bhovix_core.audit import AuditUnavailable, DuplicateEvent, LocalDirSink
-from bhovix_core.models import AuditEvent, sha256_hex
+from hadavin_sdk.audit import AuditUnavailable, DuplicateEvent, LocalDirSink
+from hadavin_sdk.models import AuditEvent, sha256_hex
 
 
 def _event(**kw):

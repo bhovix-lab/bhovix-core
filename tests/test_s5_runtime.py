@@ -5,15 +5,15 @@ from decimal import Decimal
 import pytest
 import yaml
 
-from bhovix_core.audit import LocalDirSink
-from bhovix_core.config import load_config
-from bhovix_core.guard import RegexDetector
-from bhovix_core.limits import Limits
-from bhovix_core.llm import FakeLLM
-from bhovix_core.models import RunState, now
-from bhovix_core.registry import load_registry
-from bhovix_core.runtime.agent_loop import Hooks, Runtime, Unqualified
-from bhovix_core.store import MemoryStore
+from hadavin_sdk.audit import LocalDirSink
+from hadavin_sdk.config import load_config
+from hadavin_sdk.guard import RegexDetector
+from hadavin_sdk.limits import Limits
+from hadavin_sdk.llm import FakeLLM
+from hadavin_sdk.models import RunState, now
+from hadavin_sdk.registry import load_registry
+from hadavin_sdk.runtime.agent_loop import Hooks, Runtime, Unqualified
+from hadavin_sdk.store import MemoryStore
 from tests.conftest import qualify
 
 S = RunState

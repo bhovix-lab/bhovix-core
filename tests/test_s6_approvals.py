@@ -6,13 +6,13 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from bhovix_core.approvals import Approvals, FakeChannel
-from bhovix_core.approvals.slack import verify
-from bhovix_core.audit import LocalDirSink
-from bhovix_core.config import load_config
-from bhovix_core.models import ApprovalDecision, GateDecision, Plan, Target
-from bhovix_core.registry import load_registry
-from bhovix_core.store import MemoryStore
+from hadavin_sdk.approvals import Approvals, FakeChannel
+from hadavin_sdk.approvals.slack import verify
+from hadavin_sdk.audit import LocalDirSink
+from hadavin_sdk.config import load_config
+from hadavin_sdk.models import ApprovalDecision, GateDecision, Plan, Target
+from hadavin_sdk.registry import load_registry
+from hadavin_sdk.store import MemoryStore
 
 T0 = datetime(2026, 10, 30, 9, 0, tzinfo=UTC)
 

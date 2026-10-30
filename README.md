@@ -1,10 +1,10 @@
-# bhovix-core
+# hadavin-sdk
 
-Shared building blocks for Bhovix Lab's fixed-price AI builds, and the demo builds that use them.
+Shared building blocks for Hadavin's fixed-price AI builds, and the demo builds that use them.
 
 | Folder | What it holds |
 |---|---|
-| `src/bhovix_core/` | The reusable core: one interface per capability, with backends chosen per client in config |
+| `src/hadavin_sdk/` | The reusable core: one interface per capability, with backends chosen per client in config |
 | `demos/` | Demo builds on the core (invoice & PO automation, document Q&A) |
 | `tests/` | Tests for the core and the repository rules |
 
@@ -14,7 +14,7 @@ Rules:
 
 ## Licence
 
-Proprietary. Copyright (c) 2026 Bhovix Lab. All rights reserved. See [LICENSE](LICENSE). Viewing this repository
+Proprietary. Copyright (c) 2026 Hadavin. All rights reserved. See [LICENSE](LICENSE). Viewing this repository
 does not grant any licence to use it.
 
 ## Security
