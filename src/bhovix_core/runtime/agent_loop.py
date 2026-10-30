@@ -6,12 +6,14 @@ by the app wiring (``bhovix_core.app``). Approvals are injected the same way.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from bhovix_core.actions.authorizer import authorize
 from bhovix_core.audit.protocol import AuditSink, AuditUnavailable
+from bhovix_core.config import ConfigError, confined
 from bhovix_core.guard.injection import Detector, injection_check
 from bhovix_core.identity import Principal
 from bhovix_core.limits import Limits
@@ -44,11 +46,32 @@ def qualified_runs(registry: Registry) -> list[GateRun]:
     path = registry.config.root / "qualified.jsonl"
     if not path.exists():
         return []
-    lines = path.read_text(encoding="utf-8").splitlines()
-    return [GateRun.model_validate_json(line) for line in lines if line.strip()]
+    runs = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            runs.append(GateRun.model_validate_json(line))
+        except ValueError:
+            # A torn line (disk full mid-append) qualifies nothing, and never blocks the valid lines.
+            continue
+    return runs
+
+
+def _check_golden_refs(registry: Registry, agent_id: str) -> None:
+    """Every golden input_ref must stay inside inputs_dir: checked at start-up, not only when the gate runs."""
+    path = registry.golden_path(agent_id)
+    if not path.is_file():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            try:
+                ref = json.loads(line)["input_ref"]
+            except (ValueError, KeyError, TypeError) as exc:
+                raise ConfigError(f"{path.name}: bad golden line") from exc
+            confined(registry.config.inputs_dir, ref)
 
 
 def assert_qualified(registry: Registry, agent_id: str) -> None:
+    _check_golden_refs(registry, agent_id)
     agent = registry.agents[agent_id]
     want = (
         registry.config.routes[agent.model_route].model_id,

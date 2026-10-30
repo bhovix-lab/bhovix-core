@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 
 from bhovix_core.config import confined
 from bhovix_core.llm.protocol import LLM
@@ -58,6 +59,11 @@ def gate(registry: Registry, llm: LLM, agent_id: str) -> GateRun:
         green=n > 0 and rate >= cfg.eval_threshold,
     )
     if run.green:  # append-only log: one green run per line
-        with open(cfg.root / QUALIFIED, "a", encoding="utf-8") as f:
-            f.write(run.model_dump_json() + "\n")
+        path = cfg.root / QUALIFIED
+        torn = path.exists() and path.stat().st_size > 0 and not path.read_bytes().endswith(b"\n")
+        with open(path, "a", encoding="utf-8") as f:
+            # A torn tail (disk full mid-append) is closed off, so the new record is its own whole line.
+            f.write(("\n" if torn else "") + run.model_dump_json() + "\n")
+            f.flush()
+            os.fsync(f.fileno())
     return run

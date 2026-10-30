@@ -277,3 +277,49 @@ def test_kill_switch_reset_refused_when_audit_down(cfg_dir, capsys, monkeypatch)
     assert kill_switch(rt.limits, "reset", "user:a") == 3
     assert "stays ON" in capsys.readouterr().err
     assert "kill_switch" in rt.limits.blocked("test-agent")
+
+
+# CodeRabbit on f33a53f: write_outcome never raises, even on a corrupt index line (ValueError)
+def test_write_outcome_survives_corrupt_index(tmp_path):
+    from bhovix_core.audit import LocalDirSink
+    from bhovix_core.models import AuditEvent
+
+    sink = LocalDirSink(tmp_path)
+    ev = AuditEvent(run_id="r", domain="d", operation="o", principal="p", source="s")
+    sink.objects.mkdir(parents=True)
+    (sink.objects / f"{ev.event_id}.json").write_bytes(ev.model_dump_json().encode())
+    sink.index.write_text("{not json\n", encoding="utf-8")  # forces _indexed() to hit a bad line
+    assert sink.write_outcome(ev) is None  # no exception; parked in the outbox
+    assert len(list(sink.outbox.glob("*.json"))) == 1
+
+
+# CodeRabbit on f33a53f: golden refs validated at start-up, not only at gate time
+def test_golden_ref_escape_refused_at_startup(live_cfg_dir, fake_system):
+    cfg = load_config(live_cfg_dir)
+    assert evals.gate(load_registry(cfg), make_llm(cfg), "test-agent").green
+    golden = cfg.golden_dir / "test-agent.jsonl"
+    golden.write_text(
+        '{"id": "x", "input_ref": "../config/config.yaml", "expected": {}}\n', encoding="utf-8"
+    )
+    with pytest.raises(ConfigError, match="escapes"):
+        build(live_cfg_dir, FakeSecretProvider({}), ["test-agent"])
+
+
+# CodeRabbit on f33a53f: a torn qualified.jsonl tail neither blocks valid lines nor corrupts new ones
+def test_torn_qualified_tail_is_recovered(live_cfg_dir, fake_system):
+    cfg = load_config(live_cfg_dir)
+    reg = load_registry(cfg)
+    assert evals.gate(reg, make_llm(cfg), "test-agent").green
+    path = cfg.root / "qualified.jsonl"
+    path.write_bytes(path.read_bytes() + b'{"agent_id": "test-ag')  # torn append, no newline
+    build(live_cfg_dir, FakeSecretProvider({}), ["test-agent"])  # still starts: valid line counts
+    assert evals.gate(reg, make_llm(cfg), "test-agent").green
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert (
+        len(lines) == 3
+        and lines[1].startswith('{"agent_id": "test-ag')
+        and lines[2].startswith("{")
+    )
+    from bhovix_core.runtime.agent_loop import qualified_runs
+
+    assert len(qualified_runs(reg)) == 2

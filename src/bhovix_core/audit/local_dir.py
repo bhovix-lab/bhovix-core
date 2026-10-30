@@ -78,13 +78,13 @@ class LocalDirSink:
             return self._write(event)
         except DuplicateEvent:
             return f"{event.event_id}.json"
-        except OSError:
+        except Exception:  # noqa: BLE001 - disk errors, a corrupt index line: the contract is "never raises"
             try:
                 self.outbox.mkdir(parents=True, exist_ok=True)
                 (self.outbox / f"{event.event_id}.json").write_text(
                     event.model_dump_json(), encoding="utf-8"
                 )
-            except OSError:
+            except Exception:  # noqa: BLE001
                 self._pending.append(event)
             return None
 
