@@ -77,3 +77,25 @@
   Secrets); paths stay inside the folder; on POSIX a world-readable file is refused (mount 0400/0440).
 - Every remote kind shares one TTL cache with one refresh at a time; an empty value is refused at start-up.
   A missing `aws`/`azure`/`gcp` extra now always names the `pip install`.
+
+### Upgrade steps (slice 2 P3b)
+- **The anchor moved out of the audit entry.** `backends.audit: {kind: chain, anchor: {...}}` becomes
+  `backends.audit: {kind: chain}` plus `backends.anchor: {kind: s3_object_lock, ...}` (default `none`).
+- **Prod now refuses `signer: none` and `anchor: none`**, and `ed25519_local` with a key file (set
+  `private_key_secret_name` instead). Config errors list every refusal at once.
+- `migrate(dsn, password=...)` replaces `iam_auth=`/`region=`; build the helper with
+  `hadavin_sdk.store.postgres.password_source(iam_auth, region)` (the CLI does).
+
+### Added (slice 2 P3b, `slice2-unverified` until a live run): cloud-neutral audit
+- `backends.anchor`: `s3_object_lock` (AWS S3, or MinIO / Ceph RGW through `endpoint_url`),
+  `azure_immutable_blob` (version-level WORM; container checked at start-up), `gcs_retention_lock` (bucket
+  retention policy checked; COMPLIANCE needs it locked). A put that finds the same bytes counts as anchored;
+  different bytes are never overwritten.
+- Signers: `vault_transit` (Vault / OpenBao Transit, ed25519, one pinned key version), `azure_key_vault_key`
+  (ECDSA P-256 / ES256: Key Vault has no Ed25519), `gcp_kms` (EC_SIGN_ED25519). `ed25519_local` can read its
+  key from any secrets kind (`private_key_secret_name`).
+- `audit verify` also checks that each row's event id column matches its body.
+- Cloud SDKs only in their kind modules: `audit/signer_aws.py`, `store/auth_aws.py` (RDS IAM).
+- `mounted_file` also refuses group- or other-writable files and checks the opened file (no stat-then-read
+  gap, `O_NOFOLLOW`); a Kubernetes JWT read error in `vault` is a `ConfigError`; the GCP secret fetch is bounded
+  (5 s, no retry).

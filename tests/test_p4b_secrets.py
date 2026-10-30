@@ -76,6 +76,28 @@ def test_vault_kubernetes_signs_in_with_the_service_account_token(vault, tmp_pat
     assert provider.get("db") == VALUE
 
 
+def test_vault_kubernetes_without_a_readable_token_file_is_a_config_error(vault, tmp_path):
+    settings = _settings(vault, auth="kubernetes", role="hadavin", jwt_path=tmp_path / "gone")
+    with pytest.raises(ConfigError, match="cannot read .*gone \\(FileNotFoundError\\)"):
+        make("secrets", settings).get("db")
+
+
+def test_gcp_fetch_is_bounded_with_no_retry():
+    from hadavin_sdk.actions.secrets_gcp import GcpSecretManagerProvider
+    from tests.contracts.http_fake import gcp_secret_client
+
+    client, seen = gcp_secret_client({"db": VALUE}), {}
+    real = client.access_secret_version
+
+    def spy(**kw):
+        seen.update(kw)
+        return real(**kw)
+
+    client.access_secret_version = spy
+    assert GcpSecretManagerProvider(client, PROJECT).get("db") == VALUE
+    assert (seen["timeout"], seen["retry"]) == (5, None)
+
+
 def test_vault_refuses_odd_names_missing_fields_and_reports_status_only(vault):
     provider = VaultProvider(vault.address, lambda p: ROOT, path_prefix="app/", field="nope")
     for bad in ("../db", "a/b", "..", ""):
@@ -185,9 +207,49 @@ def test_an_unreadable_mounted_file_is_a_config_error(tmp_path, monkeypatch):
     def denied(*a, **k):
         raise PermissionError("denied")
 
-    monkeypatch.setattr(Path, "read_text", denied)
+    monkeypatch.setattr(os, "open", denied)
     with pytest.raises(ConfigError, match="cannot be read \\(PermissionError\\)"):
         MountedFileProvider(root).get("db")
+
+
+def test_mounted_files_are_checked_on_the_opened_file_never_followed_through_a_link(
+    tmp_path, monkeypatch
+):
+    """No stat-then-read gap: one os.open (O_NOFOLLOW where the OS has it), then fstat on that same fd."""
+    root = tmp_path / "mounted"
+    root.mkdir()
+    write_secret_file(root, "db", VALUE)
+    opened, stated = [], []
+    real_open, real_fstat = os.open, os.fstat
+
+    def spy_open(path, flags, *a):
+        fd = real_open(path, flags, *a)
+        opened.append((flags, fd))
+        return fd
+
+    def spy_fstat(fd):
+        stated.append(fd)
+        return real_fstat(fd)
+
+    monkeypatch.setattr(os, "open", spy_open)
+    monkeypatch.setattr(os, "fstat", spy_fstat)
+    assert MountedFileProvider(root).get("db") == VALUE
+    ((flags, fd),) = opened
+    assert stated == [fd]
+    assert flags & getattr(os, "O_NOFOLLOW", 0) == getattr(os, "O_NOFOLLOW", 0)
+
+
+@pytest.mark.skipif(not POSIX, reason="Windows has no group/other bits; its folder ACL decides")
+@pytest.mark.parametrize("mode", [0o460, 0o402, 0o404])
+def test_mounted_files_writable_by_others_or_readable_by_all_are_refused(tmp_path, mode):
+    root = tmp_path / "mounted"
+    root.mkdir()
+    write_secret_file(root, "db", VALUE)
+    (root / "db").chmod(mode)
+    with pytest.raises(ConfigError, match="mount it 0400 or 0440"):
+        MountedFileProvider(root).get("db")
+    (root / "db").chmod(0o440)  # group-readable with an fsGroup is fine
+    assert MountedFileProvider(root).get("db") == VALUE
 
 
 def test_mounted_files_drop_one_newline_and_refuse_escapes_and_empties(tmp_path):
