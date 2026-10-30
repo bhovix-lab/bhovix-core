@@ -22,8 +22,10 @@ class EnvSecretProvider:
 
     def get(self, name: str) -> str:
         value = self._environ.get(self.var(name))
-        if value is None:
-            raise ConfigError(f"secret {name!r} not found (environment variable {self.var(name)})")
+        if not value:  # an empty value would pass the start-up probe and fail at call time
+            raise ConfigError(
+                f"secret {name!r} not found or empty (environment variable {self.var(name)})"
+            )
         return value
 
 

@@ -25,16 +25,18 @@ class SecretsManagerProvider:
         self._lock = threading.Lock()
 
     def get(self, name: str) -> str:
-        now = self._clock()
+        # One refresh at a time: two concurrent fetches straddling a rotation could otherwise let the older
+        # value land last and be cached for a whole TTL. ponytail: one lock for every name, per-name locks if
+        # fetch latency ever matters (fetches are rare: once per name per TTL).
         with self._lock:
+            now = self._clock()
             hit = self._cache.get(name)
-        if hit is not None and now < hit[0]:
-            return hit[1]
-        value = self._fetch(name)
-        if self.ttl_s > 0:
-            with self._lock:
+            if hit is not None and now < hit[0]:
+                return hit[1]
+            value = self._fetch(name)
+            if self.ttl_s > 0:
                 self._cache[name] = (now + self.ttl_s, value)
-        return value
+            return value
 
     def _fetch(self, name: str) -> str:
         try:

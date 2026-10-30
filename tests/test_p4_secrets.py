@@ -1,6 +1,10 @@
 """Slice 2 P4: `env` and `aws_secrets_manager` secrets through the backend table (design 4.3, 4.4, 4.6).
 The AWS kind runs on moto (in-process, $0); no real AWS call is made."""
 
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+
 import boto3
 import pytest
 import yaml
@@ -64,6 +68,30 @@ def test_ttl_zero_reads_every_time():
     provider.get("a")
     provider.get("a")
     assert calls == ["a", "a"]
+
+
+def test_concurrent_misses_fetch_once_so_an_older_value_never_overwrites_a_newer_one():
+    calls, started = [], threading.Event()
+
+    def answer(op, params):
+        calls.append(params["SecretId"])
+        started.set()
+        time.sleep(0.05)  # a slow GetSecretValue: the second caller arrives while it runs
+        return {"Name": params["SecretId"], "SecretString": f"v{len(calls)}"}
+
+    provider = SecretsManagerProvider(stub_client("secretsmanager", answer), ttl_s=300)
+    with ThreadPoolExecutor(2) as pool:
+        first = pool.submit(provider.get, "a")
+        started.wait()
+        second = pool.submit(provider.get, "a")
+        values = {first.result(), second.result()}
+    assert calls == ["a"] and values == {"v1"}
+
+
+def test_an_empty_env_secret_is_refused(monkeypatch):
+    monkeypatch.setenv("HADAVIN_SECRET_EMPTY", "")
+    with pytest.raises(ConfigError, match="not found or empty"):
+        make("secrets", EnvSecretsSettings(kind="env")).get("empty")
 
 
 def test_env_secrets_map_names_to_prefixed_variables(monkeypatch):
