@@ -51,6 +51,7 @@ def check_filter(control: Any, guardrail_id: str, version: str) -> None:
         f.get("type") == "PROMPT_ATTACK"
         and f.get("inputStrength", "NONE") != "NONE"
         and f.get("inputEnabled", True) is not False
+        and "TEXT" in f.get("inputModalities", ["TEXT"])
         for f in filters
     ):
         raise ConfigError(f"{label}: no PROMPT_ATTACK input filter is on, so it would never flag")

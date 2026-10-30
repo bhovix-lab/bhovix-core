@@ -19,6 +19,7 @@ from hadavin_sdk.llm.common import (
     Answer,
     NetworkLLM,
     json_in_text,
+    model_name,
     pinned,
     post_json,
     reply,
@@ -40,7 +41,8 @@ def floating(model_id: str, base_url: str) -> bool:
 
     ponytail: an Ollama tag (`llama3.1:8b`) can still be re-pulled to new weights; pin by digest when a client
     runs a local model in production."""
-    if _OPENAI_ALIAS.match(model_id) and not _DATED.search(model_id):
+    name = model_name(model_id)  # `openai/gpt-4o` on a router is still the moving `gpt-4o`
+    if _OPENAI_ALIAS.match(name) and not _DATED.search(name):
         return True
     return urlsplit(base_url).hostname in _LOOPBACK and ":" not in model_id
 

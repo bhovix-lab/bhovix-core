@@ -25,12 +25,21 @@ _EMPTY = {"type": "object", "properties": {}}
 
 # WARDEN register M15: an alias moves when the vendor ships a new model, so a qualified agent would silently
 # change model. Only exact ids are accepted. Which names move is each vendor's convention, so each kind exports
-# `floating(model_id, settings) -> bool` (lock-in audit 2026-10-31, row 2); `latest` moves everywhere.
+# a `floating(model_id) -> bool` rule (lock-in audit 2026-10-31, row 2). Moving everywhere: `latest`, and the
+# bare family or router names (`sonnet`, `opus`, `auto`, `default`) that routers such as LiteLLM and
+# OpenRouter map to whatever they choose. A router prefix (`openai/`, `openrouter/`) is read past.
 _LATEST = re.compile(r"(?i)(?:^|[-:/.])latest$")
+_BARE = re.compile(r"(?i)^(?:sonnet|opus|haiku|fable|default|best|opusplan|auto)(?:\[1m\])?$")
+
+
+def model_name(model_id: str) -> str:
+    """The name after any router prefix: `openai/gpt-4o` -> `gpt-4o`."""
+    return model_id.strip().rsplit("/", 1)[-1]
 
 
 def floating_anywhere(model_id: str) -> bool:
-    return not model_id.strip() or bool(_LATEST.search(model_id.strip()))
+    name = model_name(model_id)
+    return not name or bool(_LATEST.search(model_id.strip()) or _BARE.match(name))
 
 
 def pinned(

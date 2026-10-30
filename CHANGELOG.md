@@ -4,8 +4,12 @@
 
 ### Upgrade steps
 - **P5/P6 follow-ups.**
-  - An agent gated with `eval_threshold` other than 1.0, or on an `openai_compat` llm with
-    `max_completion_tokens: true`, needs one new gate run, because both now count toward `config_hash`.
+  - **Re-gate every agent once.** `golden_sha256` now covers the input documents the golden cases point at,
+    so a changed document un-qualifies.
+  - `config_hash` now also holds `eval_threshold` (when not 1.0), `max_completion_tokens` and the Foundry
+    `resource`.
+  - `eval_threshold: 0` is refused.
+  - A `bedrock_guardrail` must name a published `guardrail_version` (digits; `DRAFT` can change).
   - A detector `threshold: 0` is refused (it flagged every clean text).
   - A `bedrock_guardrail` needs `bedrock:GetGuardrail`. Start-up refuses a guardrail with no PROMPT_ATTACK
     input filter switched on.
@@ -74,7 +78,8 @@
 - P5/P6 follow-ups:
   - limits are checked again before a tool output is screened, so a reply that spent the budget never pays
     for a judge call;
-  - the ARN redaction now masks account-less ARNs (`arn:aws:s3:::bucket`) and the `aws-cn` and `aws-us-gov`
+  - redaction masks GCP `projects/<id>/...` paths and Azure `/subscriptions/<uuid>/...` ids, and ARNs with no
+    account (`arn:aws:s3:::bucket`) or in the `aws-cn` and `aws-us-gov`
     partitions;
   - `llm/retry.py` names no vendor: each llm kind says which of its SDK's errors are retryable.
 - Postgres TLS (slice 2 P7): `verify-full` by default for any non-local host, with the server's CA bundle

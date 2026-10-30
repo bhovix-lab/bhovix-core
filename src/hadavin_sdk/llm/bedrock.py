@@ -81,9 +81,20 @@ _NETWORK = (
 )
 
 
-def detail(exc: BaseException) -> str:
+def _code(exc: BaseException) -> str:
     response = getattr(exc, "response", None)
     return str(response.get("Error", {}).get("Code", "")) if isinstance(response, dict) else ""
+
+
+def detail(exc: BaseException) -> str:
+    """The HTTP status and the error code (botocore keeps both in `response`), for the log line."""
+    response = getattr(exc, "response", None)
+    status = (
+        response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        if isinstance(response, dict)
+        else None
+    )
+    return " ".join(str(p) for p in (status, _code(exc)) if p)
 
 
 def retryable(exc: BaseException) -> bool | None:
@@ -91,7 +102,7 @@ def retryable(exc: BaseException) -> bool | None:
         return True
     if isinstance(exc, botocore.exceptions.ClientError):
         code = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
-        return detail(exc) in _RETRY_CODES or (isinstance(code, int) and retryable_status(code))
+        return _code(exc) in _RETRY_CODES or (isinstance(code, int) and retryable_status(code))
     return None
 
 

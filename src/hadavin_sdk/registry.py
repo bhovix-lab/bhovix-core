@@ -6,6 +6,7 @@ Every cross-file problem fails at start-up with ``ConfigError``.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 from typing import Literal
@@ -70,6 +71,14 @@ class Registry:
         if not path.is_file():
             return ""
         data = path.read_bytes()
+        # The documents the cases point at decide pass/fail too: a changed input un-qualifies. A bad line or
+        # a missing document is left to the gate and the start-up check (`_check_golden_refs`).
+        for line in data.decode("utf-8", "replace").splitlines():
+            try:
+                ref = confined(self.config.inputs_dir, json.loads(line)["input_ref"])
+            except (ValueError, KeyError, TypeError, ConfigError):
+                continue
+            data += b"\0" + (ref.read_bytes() if ref.is_file() else b"")
         judge = self.config.golden_dir / "judge.jsonl"
         if any(d.kind == "llm_judge" for d in self.config.backends.detector) and judge.is_file():
             data += b"\0" + judge.read_bytes()  # a weakened judge set un-qualifies too
@@ -108,7 +117,7 @@ class Registry:
                 # Where and how the model runs (design 4.3); keys only when set, so `fake` agents keep their hash.
                 **{
                     f"llm_{k}": getattr(llm, k)
-                    for k in ("platform", "base_url", "max_completion_tokens")
+                    for k in ("platform", "base_url", "resource", "max_completion_tokens")
                     if getattr(llm, k, None)
                 },
                 **({"judges": judges} if judges else {}),

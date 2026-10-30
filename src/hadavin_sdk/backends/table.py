@@ -99,7 +99,8 @@ class JudgeSettings(KindSettings):
 
 class GuardrailSettings(KindSettings):
     guardrail_id: str
-    guardrail_version: str
+    # A published version: DRAFT can change after the start-up check.
+    guardrail_version: str = Field(pattern=r"^\d+$")
     region: str = Field(pattern=_NAME)
     threshold: float = Field(default=0.5, gt=0.0, le=1.0)
 
@@ -244,8 +245,13 @@ class Entry:
     hosts: Callable[[Any], list[str]] | None = None
 
 
-def _aws(service: str) -> Callable[[Any], list[str]]:
-    return lambda s: [f"{service}.{s.region}.amazonaws.com"]
+def _aws_host(service: str, region: str) -> str:
+    """China regions (`cn-*`) are served under amazonaws.com.cn."""
+    return f"{service}.{region}.amazonaws.com" + (".cn" if region.startswith("cn-") else "")
+
+
+def _aws(*services: str) -> Callable[[Any], list[str]]:
+    return lambda s: [_aws_host(service, s.region) for service in services]
 
 
 def _vertex_host(region: str) -> str:
@@ -266,7 +272,7 @@ def _anthropic_hosts(s: Any) -> list[str]:
 
 
 def _chain_hosts(s: Any) -> list[str]:
-    return [f"{s.anchor.bucket}.s3.{s.anchor.region}.amazonaws.com"] if s.anchor else []
+    return [_aws_host(f"{s.anchor.bucket}.s3", s.anchor.region)] if s.anchor else []
 
 
 _BUILTIN = "hadavin_sdk.backends.builtin"
@@ -288,18 +294,25 @@ TABLE: dict[str, dict[str, Entry]] = {
             status=_UNVERIFIED,
             hosts=_aws("secretsmanager"),
         ),
-        "vault": Entry(VaultSettings, f"{_ACTIONS}.secrets_vault:build", status=_UNVERIFIED),
+        "vault": Entry(
+            VaultSettings,
+            f"{_ACTIONS}.secrets_vault:build",
+            status=_UNVERIFIED,
+            hosts=lambda s: [urlsplit(s.address).hostname or ""],
+        ),
         "azure_key_vault": Entry(
             AzureKeyVaultSettings,
             f"{_ACTIONS}.secrets_azure:build",
             extra="azure",
             status=_UNVERIFIED,
+            hosts=lambda s: [urlsplit(s.vault_url).hostname or "", "login.microsoftonline.com"],
         ),
         "gcp_secret_manager": Entry(
             GcpSecretManagerSettings,
             f"{_ACTIONS}.secrets_gcp:build",
             extra="gcp",
             status=_UNVERIFIED,
+            hosts=lambda s: ["secretmanager.googleapis.com", "oauth2.googleapis.com"],
         ),
         "mounted_file": Entry(
             MountedFileSettings, f"{_ACTIONS}.secrets_file:build", status=_UNVERIFIED
@@ -374,16 +387,16 @@ TABLE: dict[str, dict[str, Entry]] = {
             "aws",
             status=_UNVERIFIED,
             # The runtime screens; the control plane reads the guardrail's filters once at start-up.
-            hosts=lambda s: [
-                f"bedrock-runtime.{s.region}.amazonaws.com",
-                f"bedrock.{s.region}.amazonaws.com",
-            ],
+            hosts=_aws("bedrock-runtime", "bedrock"),
         ),
     },
     "channel": {
         "fake": Entry(FakeChannelSettings, f"{_BUILTIN}:fake_channel"),
         "slack": Entry(
-            SlackSettings, "hadavin_sdk.approvals.slack_channel:build", status=_UNVERIFIED
+            SlackSettings,
+            "hadavin_sdk.approvals.slack_channel:build",
+            status=_UNVERIFIED,
+            hosts=lambda s: [urlsplit(s.api_base).hostname or ""],
         ),
     },
 }

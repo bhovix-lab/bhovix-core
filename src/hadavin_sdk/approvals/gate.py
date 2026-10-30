@@ -359,206 +359,314 @@ _UNVERIFIABLE = re.compile(
 #
 # Ported from WARDEN `withhold_commands` (gate.py @ a1e76cbf), which named write shapes for the AWS CLI, kubectl,
 # helm, terraform and SQL only, so any other platform's command passed (lock-in audit 2026-10-31, row 13).
-# Platform-neutral and FAIL CLOSED here: for every CLI below, a command is withheld unless it is positively
-# recognised as read-only (a read verb in its subcommand chain and no write verb). The SQL, `rm -rf`, `curl | sh`
-# and PowerShell shapes have no read list, so they stay write shapes.
+# Platform-neutral and FAIL CLOSED here. A known CLI name (any path before it, any .exe/.cmd/.bat after it) followed
+# by a word or a flag is a command, and it is withheld from the name to the end of its line unless its subcommand
+# path is positively read-only. Only the subcommand path decides: flags and their values never make a command
+# read-only. The SQL, `rm`, `curl | sh` and PowerShell shapes have no read form, so they are write shapes.
 #
-# A command, not the story of one (WARDEN measured 2,035 recorded model strings, 2026-10-16): the model says what
-# happened ("a 'kubectl rollout restart' replaced the pods"). So a program name counts only in lower case, followed
-# by a subcommand chain that ENDS like a command: the line or text ends, a flag or a shell operator follows, or an
-# argument with a path, digit, `:`, `=` or `@` does. A chain that runs on into prose (a quote, a comma, a fifth
-# plain word) is a story. `git`, `docker`, `podman` and `helm` are also English words or nouns in incident prose,
-# so they count only where a command is written: at the start of a line, after `$`, `sudo`, a shell operator or a
-# backtick, or with a flag. Each program with a fixed command set must name one of its own subcommands first.
-# Linear: each name is matched once, then at most _MAX_TOKENS tokens are read after it, never re-scanned.
+# A story of a command, not a command, passes (WARDEN measured 2,035 recorded model strings, 2026-10-16), in two
+# narrow shapes only:
+# - a quoted name in prose: `a 'kubectl rollout restart' replaced the pods`, where the quote closes after at most
+#   three words and prose follows; never a backtick, never after `-c`, never at the end of the text;
+# - an English-word CLI (`git`, `docker`, `podman`, `helm`, `ansible`) mid-sentence, with no flag and no write
+#   verb next: `the docker image was rebuilt`. At the start of a line, after `$`, `sudo`, a shell operator or a
+#   backtick, or with a flag or a write verb, it is a command.
+# A capitalised name (`a Terraform apply at 07:31`) is prose, and so is a fixed-set CLI followed by a word that is
+# none of its subcommands (`created by terraform at 05:10`). Linear: one pass over the names, and each name reads
+# at most _MAX_TOKENS tokens of its own line and 40 characters before it.
 WITHHELD = "[command withheld (G4)]"
-_MAX_TOKENS = 12
-_MAX_WORDS = 4
+_MAX_TOKENS = 16
 
 
 def _words(s: str) -> frozenset[str]:
     return frozenset(s.split())
 
 
-# Write verbs in any CLI. A chain holding one is never read-only, whatever read verb it also holds.
+# Write verbs in any CLI: an English-word CLI followed by one is a command even mid-sentence.
 _WRITE_VERBS = _words(
-    "add annotate apply attach autoscale cordon cp create del delete deploy destroy detach disable down drain drop "
-    "edit enable exec expose grant import install invoke kill label modify move mv patch prune purge push put "
-    "reboot remove replace reset restart revoke rm rmi rollback run scale set start stop sync taint terminate "
-    "uncordon uninstall unset up update upgrade"
+    "add annotate apply approve attach autoscale cordon cp create deallocate del delete deny deploy destroy detach "
+    "disable down drain drop edit enable exec expose flushall flushdb grant import install invoke kill label modify "
+    "move mv patch pause prune purge push put rb reboot remove replace reset restart restore resume revoke rm rmi "
+    "rollback rollout run scale set start stop suspend sync taint terminate undo uncordon uninstall unset up update "
+    "upgrade"
 )
 _AWS_READ_PREFIXES = ("describe-", "get-", "list-", "head-", "batch-get-", "lookup-", "search-")
-
-# program -> (its own first-level subcommands, or None when the set is open; read verbs)
-_PROGRAMS: dict[str, tuple[frozenset[str] | None, frozenset[str]]] = {
-    "aws": (None, _words("ls scan query wait")),
-    "gcloud": (None, _words("describe list get-iam-policy get-value read info version")),
-    "gsutil": (None, _words("ls cat du stat hash version")),
-    "bq": (None, _words("ls show head version")),
-    "az": (None, _words("show list version")),
-    "azcopy": (None, _words("list jobs show env version")),
+# Programs whose read decision is their first subcommand (two words where the first only groups others).
+_VERB_FIRST: dict[str, tuple[frozenset[str], frozenset[str], frozenset[str]]] = {
+    # program: (read verbs, grouping verbs whose second word decides, read second words)
     "kubectl": (
         _words(
-            "annotate api-resources api-versions apply attach auth autoscale certificate cluster-info completion "
-            "config cordon cp create debug delete describe diff drain edit events exec explain expose get kustomize "
-            "label logs patch plugin port-forward proxy replace rollout run scale set taint top uncordon version "
-            "wait"
+            "get describe logs top explain version api-resources api-versions cluster-info diff events wait"
         ),
-        _words(
-            "get describe logs top explain version api-resources api-versions cluster-info diff events "
-            "status history can-i"
-        ),
+        _words("rollout auth config"),
+        _words("status history can-i whoami view get-contexts current-context get-clusters"),
     ),
     "helm": (
-        _words(
-            "create dependency diff env get history install lint list ls package plugin pull push registry "
-            "repo rollback search show status template test uninstall upgrade verify version"
-        ),
         _words("get history lint list ls search show status template verify version env diff"),
+        _words("repo plugin"),
+        _words("list ls"),
     ),
     "terraform": (
-        _words(
-            "init validate plan apply destroy console fmt force-unlock get graph import login logout "
-            "metadata output providers refresh show state taint test untaint version workspace"
-        ),
-        _words("plan validate show output providers graph version list"),
+        _words("plan validate show output providers graph version"),
+        _words("state workspace"),
+        _words("list show"),
     ),
     "pulumi": (
-        _words(
-            "about cancel config convert destroy import install login logout logs new org package plugin "
-            "policy preview refresh schema stack state up update version watch whoami"
-        ),
-        _words("about preview logs whoami version ls output get"),
+        _words("about preview logs whoami version"),
+        _words("stack config"),
+        _words("ls output get"),
     ),
-    "ansible": (None, _words("version")),
-    "ansible-playbook": (None, _words("syntax-check list-tasks list-hosts")),
     "systemctl": (
-        None,
         _words(
             "status show cat list-units list-unit-files list-timers list-sockets is-active is-enabled "
             "is-failed is-system-running get-default"
         ),
+        frozenset(),
+        frozenset(),
     ),
-    "psql": (None, frozenset()),
-    "mysql": (None, frozenset()),
-    "mongosh": (None, frozenset()),
-    "redis-cli": (None, _words("ping info get keys scan ttl type exists")),
     "git": (
-        _words(
-            "add am apply bisect blame branch checkout cherry-pick clean clone commit describe diff fetch "
-            "grep init log merge mv pull push rebase reflog remote reset restore revert rm show stash status "
-            "switch tag worktree rev-parse ls-files"
-        ),
         _words("blame describe diff grep log reflog show status rev-parse ls-files"),
+        _words("remote stash branch tag"),
+        _words("-v show list"),
     ),
-    "gh": (None, _words("view list status diff checks")),
-    "glab": (None, _words("view list status diff")),
+    "docker": (
+        _words("diff events history images info inspect logs ps port search stats top version"),
+        _words("compose image container network volume system"),
+        _words("ls ps logs config inspect df images top"),
+    ),
 }
-_PROGRAMS["tofu"] = _PROGRAMS["terraform"]
-_PROGRAMS["oc"] = (
-    _PROGRAMS["kubectl"][0]
-    | _words("adm new-app new-project project projects start-build status whoami"),
-    _PROGRAMS["kubectl"][1] | _words("status whoami projects"),
+_VERB_FIRST["oc"] = (
+    _VERB_FIRST["kubectl"][0] | _words("status whoami projects"),
+    _VERB_FIRST["kubectl"][1],
+    _VERB_FIRST["kubectl"][2],
 )
-for _name in ("docker", "podman"):
-    _PROGRAMS[_name] = (
-        _words(
-            "attach build commit compose container cp create diff events exec export history image images "
-            "import info inspect kill load login logout logs network pause plugin port ps pull push rename "
-            "restart rm rmi run save search start stats stop system tag top unpause update version volume wait"
-        ),
-        _words("diff events history images info inspect logs ps port search stats top version ls"),
-    )
-
-_CODE_ONLY = frozenset({"git", "docker", "podman", "helm", "ansible"})
-
+_VERB_FIRST["tofu"] = _VERB_FIRST["terraform"]
+_VERB_FIRST["podman"] = _VERB_FIRST["docker"]
+_VERB_FIRST["docker-compose"] = (
+    _words("ps logs config top images version"),
+    frozenset(),
+    frozenset(),
+)
+# Programs whose subcommand path is a run of words (`gcloud compute instances describe`): read only when the run
+# holds a read word and no write word. Their read words:
+_WORD_RUN: dict[str, frozenset[str]] = {
+    "gcloud": _words("describe list get-iam-policy get-value read info version"),
+    "gsutil": _words("ls cat du stat hash version"),
+    "bq": _words("ls show head version"),
+    "az": _words("show list version"),
+    "azcopy": _words("list jobs show env version"),
+    "ansible": frozenset(),
+    "ansible-playbook": frozenset(),
+    "psql": frozenset(),
+    "mysql": frozenset(),
+    "mongosh": frozenset(),
+    "redis-cli": _words("ping info get keys scan ttl type exists"),
+    "gh": _words("view list status diff checks"),
+    "glab": _words("view list status diff"),
+}
+# Also English words or nouns in incident prose ("a psql session"): a command only in code position, with a
+# flag, or with a write verb next.
+_ENGLISH = frozenset(
+    {
+        "git",
+        "docker",
+        "docker-compose",
+        "podman",
+        "helm",
+        "ansible",
+        "psql",
+        "mysql",
+        "mongosh",
+        "redis-cli",
+    }
+)
+# Every first-level subcommand of the CLIs with a fixed set (read and write alike).
+_OWN: dict[str, frozenset[str]] = {
+    "kubectl": _words(
+        "annotate api-resources api-versions apply attach auth autoscale certificate cluster-info completion "
+        "config cordon cp create debug delete describe diff drain edit events exec explain expose get kustomize "
+        "label logs patch plugin port-forward proxy replace rollout run scale set taint top uncordon version wait"
+    ),
+    "helm": _words(
+        "create dependency diff env get history install lint list ls package plugin pull push registry repo "
+        "rollback search show status template test uninstall upgrade verify version"
+    ),
+    "terraform": _words(
+        "init validate plan apply destroy console fmt force-unlock get graph import login logout metadata output "
+        "providers refresh show state taint test untaint version workspace"
+    ),
+    "pulumi": _words(
+        "about cancel config convert destroy import install login logout logs new org package plugin policy "
+        "preview refresh schema stack state up update version watch whoami"
+    ),
+    "git": _words(
+        "add am apply bisect blame branch checkout cherry-pick clean clone commit describe diff fetch grep init "
+        "log merge mv pull push rebase reflog remote reset restore revert rm show stash status switch tag "
+        "worktree rev-parse ls-files gc prune filter-branch"
+    ),
+    "docker": _words(
+        "attach build builder buildx commit compose container context cp create diff events exec export history "
+        "image images import info inspect kill load login logout logs network node pause plugin port ps pull "
+        "push rename restart rm rmi run save search secret service stack start stats stop swarm system tag top "
+        "unpause update version volume wait"
+    ),
+    "systemctl": _words(
+        "status show cat list-units list-unit-files list-timers list-sockets is-active is-enabled is-failed "
+        "is-system-running get-default start stop restart reload try-restart reload-or-restart kill enable "
+        "disable reenable mask unmask isolate set-default daemon-reload daemon-reexec edit revert reset-failed "
+        "poweroff reboot halt suspend hibernate set-property"
+    ),
+    "docker-compose": _words(
+        "build config create down events exec images kill logs pause port ps pull push restart rm run scale "
+        "start stop top unpause up version"
+    ),
+}
+_OWN["oc"] = _OWN["kubectl"] | _words(
+    "adm new-app new-project project projects start-build status whoami"
+)
+_OWN["tofu"] = _OWN["terraform"]
+_OWN["podman"] = _OWN["docker"] | _words("pod generate play machine")
+_NAMES = ["aws", *_VERB_FIRST, *_WORD_RUN]
 _PROGRAM = re.compile(
-    r"(?<![\w./-])("
-    + "|".join(re.escape(p) for p in sorted(_PROGRAMS, key=len, reverse=True))
-    + r")(?![\w-])"
+    r"(?<![\w.-])(?:[\w.~-]{0,64}[/\\])?("  # a path before the name, bounded: no quadratic scan
+    + "|".join(re.escape(p) for p in sorted(_NAMES, key=len, reverse=True))
+    + r")(?:(?:\.|\[\.\])(?:exe|cmd|bat))?(?![\w-])"
 )
-_TOKEN = re.compile(r"[ \t]+(-{1,2}[A-Za-z0-9][\w-]*(?:=\S*)?|\S+)")
-_WORD = re.compile(r"[a-z][a-z0-9-]*")
-_ARG_CHARS = re.compile(
-    r"[/\d:=@.\\\['\"`]"
-)  # `[` too: G3 leaves `[link removed]` where a URL stood
-_QUOTED_WORD = re.compile(r"[a-z][a-z0-9-]*[\"'`)\]]+")
-_WORD_THEN_STOP = re.compile(r"[a-z][a-z0-9-]*[.,;:!?]")
-_SHELL_OP = re.compile(r"[ \t]*(?:[;|&]|$)", re.MULTILINE)
-_CODE_BEFORE = re.compile(r"(?:^|[`$;|&(]|\bsudo)[ \t]*$", re.MULTILINE)
-
-# Write shapes with no read form to recognise (WARDEN's, plus the INSERT/GRANT/CREATE and PowerShell additions).
-_WRITE_SHAPES = re.compile(
-    r"\bpg_(?:cancel|terminate)_backend\s*\("
-    r"|\bALTER\s+(?:DATABASE|INDEX|ROLE|SCHEMA|TABLE|USER)\s+\S+\s+(?:ADD|ALTER|ATTACH|DETACH|DISABLE|DROP|ENABLE|"
-    r"OWNER|RENAME|RESET|SET|VALIDATE)\b|\bALTER\s+SYSTEM\s+(?:SET|RESET)\b"
-    r"|\b(?:DROP|TRUNCATE)\s+(?:DATABASE|INDEX|ROLE|SCHEMA|TABLE|USER)\s+(?:IF\s+EXISTS\s+)?[\w.\"]+"
-    r"|\bCREATE\s+(?:DATABASE|INDEX|ROLE|SCHEMA|TABLE|USER)\s+[\w.\"]+"
-    r"|\bDELETE\s+FROM\s+[\w.\"]+|\bUPDATE\s+[\w.\"]+\s+SET\b|\bINSERT\s+INTO\s+[\w.\"]+"
-    r"|\b(?:GRANT|REVOKE)\s+[A-Z, ]+\s+ON\b"
-    r"|\b(?!Get-)[A-Z][a-z]+-Az[A-Z][A-Za-z]*\b"
-    r"|\b(?:Remove-Item|Stop-Service|Stop-Process|Restart-Service|Restart-Computer|Stop-Computer)\b"
-    r"|\brm\s+-[a-zA-Z]*[rRf][a-zA-Z]*(?=\s+\S)"
-    r"|\b(?:curl|wget)\s[^|\n]*\|\s*(?:sudo\s+)?(?:ba|z)?sh\b"
-)
+_TOKEN = re.compile(r"[^\S\n]+([^\s]+)")
+_PLAIN = re.compile(r"[a-z][a-z0-9-]*")
+_CODE_BEFORE = re.compile(r"(?:^|[`$;|&({]|\bsudo)[^\S\n]*$")
+_NO_VALUE_FLAGS = frozenset({"--no-pager", "-A", "--all-namespaces", "-q", "--quiet", "--oneline"})
+_ANY_CASE = frozenset({"redis-cli"})  # its commands are written in capitals (FLUSHALL)
 
 
-def _command_end(text: str, prog: str, start: int) -> tuple[int, bool] | None:
-    """Where the command that starts at `start` ends, and whether it is read-only; None for a story."""
-    pos, chain, flag, arg, ended = start, [], False, False, False
+def _tokens(text: str, start: int) -> list[str]:
+    out, pos = [], start
     for _ in range(_MAX_TOKENS):
         m = _TOKEN.match(text, pos)
-        if (
-            m is None
-        ):  # the line or text ends here, or a quote or bracket follows the word: decided below
+        if m is None:
             break
-        tok = m.group(1)
-        stop = _WORD_THEN_STOP.fullmatch(tok)  # `nginx.` / `web,`: the command ends with the clause
-        if tok.startswith("-"):
-            flag = True
-        elif stop or _WORD.fullmatch(tok):
-            chain.append(tok.rstrip(".,;:!?"))
-            if len(chain) > _MAX_WORDS:
-                return None  # it runs on into prose: a story
-        elif _ARG_CHARS.search(tok) and not _QUOTED_WORD.fullmatch(tok):
-            arg = ended = True  # an argument: a path, a name with digits, key=value, a quoted value
-        else:  # `Lambda`, `restart'`: prose, unless flags already made it a command
-            break
+        out.append(m.group(1))
         pos = m.end()
-        if stop or ended:
-            ended = True
+    return out
+
+
+def _subcommands(toks: list[str]) -> list[str]:
+    """The subcommand words, lower-cased. A flag with no `=` takes the next token as its value, unless it is one
+    of the few flags known to take none: misreading the other way could make a flag's value (`-n logs`) look like
+    a read verb, while this way a misread only withholds more."""
+    words, skip = [], False
+    for tok in toks:
+        low = tok.lower().rstrip(".,;:!?)`'\"")
+        if tok.startswith("-"):
+            skip = "=" not in tok and tok not in _NO_VALUE_FLAGS
+            continue
+        if skip:
+            skip = False
+            continue
+        if not _PLAIN.fullmatch(low):
             break
-    else:
-        ended = True
-    ended = ended or flag or bool(_SHELL_OP.match(text, pos))
-    own, read = _PROGRAMS[prog]
+        words.append(low)
+    return words
+
+
+def _readonly(prog: str, words: list[str]) -> bool:
+    if not words:
+        return False
+    if prog == "aws":  # aws [flags] service operation
+        return len(words) >= 2 and (
+            words[1].startswith(_AWS_READ_PREFIXES) or (words[0] == "s3" and words[1] == "ls")
+        )
+    if prog in _VERB_FIRST:
+        read, groups, second = _VERB_FIRST[prog]
+        if words[0] in groups:
+            return len(words) >= 2 and words[1] in second
+        return words[0] in read
+    run = words[:6]
+    return not any(w in _WRITE_VERBS for w in run) and any(w in _WORD_RUN[prog] for w in run)
+
+
+def _story(text: str, prog: str, s: int, e: int, toks: list[str]) -> bool:
+    before = text[max(0, s - 40) : s]
+    before = before[before.rfind("\n") + 1 :]
+    first = toks[0].rstrip(".,;:!?'\"") if toks else ""
+    if prog in _ANY_CASE:
+        first = first.lower()
+    if not toks or re.fullmatch(r"[A-Z][a-z]+|[^\w/.~$-]+", first):
+        return True  # `the aws Lambda runtime`: a capitalised word or punctuation, not an argument
+    # A quoted name in prose: the quote opens right before it, closes within three words, and prose follows.
+    if before.endswith(("'", '"')) and not before[:-1].rstrip().endswith("-c"):
+        quote = before[-1]
+        close = text.find(quote, e, e + 80)
+        after = text[close + 1 : close + 3] if close != -1 else ""
+        inside = text[e:close].split() if close != -1 else []
+        if close != -1 and len(inside) <= 3 and re.match(r"[^\S\n]+[a-z]", after + "x"):
+            return not any(t.startswith("-") for t in inside)
+    word = first.lower()
     if (
-        not ended
-        or not (chain or flag or arg)
-        or (own is not None and not any(t in own for t in chain))
+        prog in _OWN
+        and _PLAIN.fullmatch(word)
+        and word not in _OWN[prog]
+        and word not in _WRITE_VERBS
     ):
-        return None
-    if prog in _CODE_ONLY and not flag and not _CODE_BEFORE.search(text, 0, start - len(prog)):
-        return None
-    writes = any(t in _WRITE_VERBS for t in chain)
-    if prog == "aws":
-        readonly = not writes and any(t.startswith(_AWS_READ_PREFIXES) or t in read for t in chain)
-    else:
-        readonly = not writes and any(t in read for t in chain)
-    return pos, readonly
+        # `created by terraform at 05:10`: no subcommand of that CLI follows, so no command either.
+        # ponytail: a kubectl/git plugin or alias (`kubectl foo`) reads as prose here; list it in _OWN.
+        return True
+    if prog in _ENGLISH and not _CODE_BEFORE.search(before):
+        return not any(t.startswith("-") for t in toks) and word not in _WRITE_VERBS
+    return False
+
+
+# Write shapes with no read form (WARDEN's, widened: more statement kinds, quoted identifiers, T-SQL, PowerShell).
+_ID = r"[\w.\"`\[\]]+"
+_WRITE_SHAPES = re.compile(
+    r"\bpg_(?:cancel|terminate)_backend\s*\("
+    r"|\bALTER\s+(?:DATABASE|INDEX|ROLE|SCHEMA|TABLE|USER|VIEW)\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?\S+\s+"
+    r"(?:ADD|ALTER|ATTACH|DETACH|DISABLE|DROP|ENABLE|OWNER|RENAME|RESET|SET|VALIDATE)\b"
+    r"|\bALTER\s+SYSTEM\s+(?:SET|RESET)\b"
+    r"|\bDROP\s+(?:DATABASE|INDEX|ROLE|SCHEMA|TABLE|USER|VIEW|MATERIALIZED\s+VIEW|FUNCTION|PROCEDURE|SEQUENCE|"
+    r"EXTENSION|TRIGGER)\s+(?:IF\s+EXISTS\s+)?"
+    + _ID
+    + r"|\bTRUNCATE\s+(?:TABLE\s+)?"
+    + _ID
+    + r"|\bCREATE\s+(?:OR\s+REPLACE\s+)?(?:DATABASE|INDEX|ROLE|SCHEMA|TABLE|USER|VIEW|FUNCTION|TRIGGER)\s+"
+    + _ID
+    + r"|\bDELETE\s+FROM\s+"
+    + _ID
+    + r"|\bDELETE\s+"
+    + _ID
+    + r"\s+WHERE\b"
+    + r"|\bUPDATE\s+"
+    + _ID
+    + r"\s+SET\b|\bINSERT\s+INTO\s+"
+    + _ID
+    + r"|\bMERGE\s+INTO\s+"
+    + _ID
+    + r"|\b(?:GRANT|REVOKE)\s+[A-Z][A-Z, ]{0,80}\bON\b"
+    r"|\b(?i:(?!get-)[a-z]+-(?:az|azurerm|azuread|ec2|s3|iam|rds|lm|cfn|ecs|eks)[a-z]\w*)\b"
+    r"|\b(?i:remove-item|stop-service|stop-process|restart-service|restart-computer|stop-computer)\b"
+    r"|\b(?i:invoke-(?:restmethod|webrequest|expression)|irm|iwr|iex)\b[^\n]{0,500}\|\s*(?i:iex|invoke-expression)\b"
+    r"|\brm\s+(?:-[a-zA-Z]*[rRf][a-zA-Z]*|--recursive|--force)(?=\s+\S)"
+    r"|\b(?:curl|wget)\s[^|\n]{0,500}\|\s*(?:sudo\s+(?:-\S+\s+)*)?(?:/\S*/)?(?:ba|z|da)?sh\b"
+    # `<(` also as G3 leaves it (`<` becomes U+2039 outside placeholders).
+    r"|\b(?:ba|z)?sh\s+(?:-c\s+)?[\"']?(?:[<‹]|\$)\(\s*(?:curl|wget)\b"
+)
 
 
 def withhold_commands(text: str) -> str:
     """G4 over one piece of model-derived text: each command not positively recognised as read-only is replaced
-    where it stands (the program and its subcommand chain), so what is left cannot be pasted and run."""
+    from its program name to the end of its line, so what is left cannot be pasted and run."""
     text = _WRITE_SHAPES.sub(WITHHELD, text)
     out, last = [], 0
     for m in _PROGRAM.finditer(text):
         if m.start() < last:
             continue
-        found = _command_end(text, m.group(1), m.end())
-        if found is None or found[1]:
+        prog = m.group(1)
+        toks = _tokens(text, m.end())
+        if _story(text, prog, m.start(), m.end(), toks):
             continue
+        if _readonly(prog, _subcommands(toks)):
+            continue
+        end = text.find("\n", m.end())
         out += [text[last : m.start()], WITHHELD]
-        last = found[0]
+        last = len(text) if end == -1 else end
     return "".join(out) + text[last:]

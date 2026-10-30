@@ -376,3 +376,123 @@ def test_the_judge_runs_on_an_openai_compatible_local_model():
         assert (v.flagged, v.score) == (False, 0.0)
     finally:
         wire.close()
+
+
+# --- the independent review's findings (2026-10-31) -------------------------------------------------------
+
+
+def test_eval_threshold_zero_is_refused(cfg_dir):
+    _edit(cfg_dir, lambda d: d.update(eval_threshold=0))
+    with pytest.raises(ConfigError):
+        load_config(cfg_dir)
+
+
+def test_the_foundry_resource_is_in_the_hash(cfg_dir):
+    llm = {
+        "kind": "anthropic",
+        "platform": "foundry",
+        "api_key_secret_name": "a",
+        "resource": "one",
+    }
+    _edit(cfg_dir, lambda d: d["backends"].update(llm=llm))
+    one = _hash(cfg_dir)
+    _edit(cfg_dir, lambda d: d["backends"].update(llm={**llm, "resource": "two"}))
+    assert _hash(cfg_dir) != one
+
+
+def test_a_changed_golden_document_un_qualifies(cfg_dir):
+    cfg = load_config(cfg_dir)
+    before = load_registry(cfg).golden_sha256("test-agent")
+    doc = cfg.inputs_dir / "golden-01.txt"
+    doc.write_text(doc.read_text(encoding="utf-8") + " changed", encoding="utf-8")
+    assert load_registry(cfg).golden_sha256("test-agent") != before
+
+
+@pytest.mark.parametrize("model_id", ["openai/gpt-4o", "openrouter/auto", "sonnet", "litellm/opus"])
+def test_a_router_prefix_does_not_hide_a_moving_alias(model_id):
+    settings = OpenAICompatSettings(kind="openai_compat", base_url="https://router.example/v1")
+    with pytest.raises(ConfigError, match="alias"):
+        make("llm", settings, routes=_route(model_id))
+
+
+def test_the_other_network_kinds_name_their_hosts():
+    from hadavin_sdk.backends.table import (
+        AzureKeyVaultSettings,
+        GcpSecretManagerSettings,
+        SlackSettings,
+        VaultSettings,
+    )
+
+    slack = SlackSettings(
+        kind="slack",
+        channel_id="C1",
+        signing_secret_name="s",  # noqa: S106 - a name
+        bot_token_secret_name="b",  # noqa: S106 - a name
+    )
+    found = hosts(
+        [
+            ("channel", slack),
+            ("secrets", VaultSettings(kind="vault", address="https://vault.example:8200")),
+            (
+                "secrets",
+                AzureKeyVaultSettings(kind="azure_key_vault", vault_url="https://kv.example"),
+            ),
+            ("secrets", GcpSecretManagerSettings(kind="gcp_secret_manager", project_id="p-1")),
+            ("llm", BedrockSettings(kind="bedrock", region="cn-x-1")),
+        ]
+    )
+    for host in ["slack.com", "vault.example", "kv.example", "secretmanager.googleapis.com"]:
+        assert host in found
+    assert "bedrock-runtime.cn-x-1.amazonaws.com.cn" in found
+
+
+def test_a_draft_guardrail_version_is_refused():
+    with pytest.raises(ValidationError):
+        GuardrailSettings(
+            kind="bedrock_guardrail", guardrail_id="g", guardrail_version="DRAFT", region="r-1"
+        )
+
+
+def test_a_prompt_attack_filter_must_screen_text():
+    from hadavin_sdk.guard.bedrock_guardrail import check_filter
+
+    image_only = {**ATTACK_ON, "inputModalities": ["IMAGE"]}
+    with pytest.raises(ConfigError, match="PROMPT_ATTACK"):
+        check_filter(_control(_get_guardrail([image_only])), "contract-guardrail", "1")
+
+
+@pytest.mark.parametrize(
+    "text, label",
+    [
+        ("path projects/acme-prod-42/locations/x/keyRings/k here", "GCPRESOURCE"),
+        (
+            "id /subscriptions/0f0f0f0f-1111-2222-3333-444455556666/resourceGroups/rg here",
+            "AZURERESOURCE",
+        ),
+    ],
+)
+def test_other_clouds_resource_ids_are_masked(text, label):
+    out = redact(text)
+    assert f"<{label}_1>" in out.text and out.text.endswith(" here")
+
+
+def test_bedrock_logs_the_status_and_code():
+    pytest.importorskip("boto3", reason="needs extra aws")
+    import botocore.exceptions as be
+
+    from hadavin_sdk.llm import bedrock
+
+    exc = be.ClientError(
+        {"Error": {"Code": "AccessDeniedException"}, "ResponseMetadata": {"HTTPStatusCode": 403}},
+        "Converse",
+    )
+    assert bedrock.detail(exc) == "403 AccessDeniedException"
+
+
+def test_a_cut_summary_is_screened_again():
+    from hadavin_sdk.approvals.gate import WITHHELD, withhold_commands
+
+    cut = (
+        "a " * 1449
+    ) + "kubectl delete ns prod"  # what a 2,900-character cut can leave at the end
+    assert WITHHELD in withhold_commands(cut)

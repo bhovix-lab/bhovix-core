@@ -159,6 +159,15 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ),
     # Account-less (`arn:aws:s3:::bucket`) and other partitions (`aws-cn`, `aws-us-gov`) too (lock-in audit row 14).
     ("ARN", re.compile(r"arn:aws[a-z-]*:[a-z0-9\-]*:[a-z0-9\-]*:(?:\d{12})?:[^\s\"']+")),
+    # The other clouds' resource ids name the client's project or subscription the same way (audit row 14).
+    ("GCPRESOURCE", re.compile(r"\bprojects/[a-z][a-z0-9-]{4,28}[a-z0-9](?:/[^\s\"']+)?")),
+    (
+        "AZURERESOURCE",
+        re.compile(
+            r"/subscriptions/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+            r"(?:/[^\s\"']+)?"
+        ),
+    ),
     # Three segments (a JWS) to five (a JWE, whose second may be empty): a JWE's last two parts were left in clear
     # (eighth review, 2026-10-01).
     (

