@@ -17,7 +17,7 @@ from hadavin_sdk.config import ConfigError, confined
 from hadavin_sdk.guard.injection import Detector, injection_check
 from hadavin_sdk.identity import Principal
 from hadavin_sdk.limits import Limits
-from hadavin_sdk.llm.protocol import LLM
+from hadavin_sdk.llm.protocol import LLM, ProviderExhausted
 from hadavin_sdk.models import (
     AuditEvent,
     GateDecision,
@@ -177,13 +177,18 @@ class Runtime:
                 return self._to(run, S.STOPPED, "kill_switch")
             if blocked:
                 return self._to(run, S.NEEDS_PERSON, f"limits.{blocked[0]}")
-            reply = self.llm.chat(
-                messages,
-                system=system,
-                route=agent.model_route,
-                tools=tools,
-                documents=[document],
-            )
+            self.store.touch(run.run_id)  # heartbeat for tick's stuck-run rule
+            try:
+                reply = self.llm.chat(
+                    messages,
+                    system=system,
+                    route=agent.model_route,
+                    tools=tools,
+                    documents=[document],
+                )
+            except ProviderExhausted:
+                self._note(run, "llm", "chat", result="exhausted", error_code="provider_exhausted")
+                return self._to(run, S.NEEDS_PERSON, "provider_exhausted")
             self.limits.charge(agent_id, reply.cost_usd)
             self.store.add_cost(run.run_id, reply.cost_usd)
             if not reply.tool_calls:

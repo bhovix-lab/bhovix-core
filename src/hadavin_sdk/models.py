@@ -214,7 +214,7 @@ class Reply(Shape):
 
 class Verdict(Shape):
     flagged: bool
-    score: float
+    score: float = Field(ge=0.0, le=1.0)
     backend: str
     reason_code: str | None = None
 
