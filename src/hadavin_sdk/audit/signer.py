@@ -122,8 +122,11 @@ def build_local(settings, deps) -> LocalSigner:
 
 def build_kms(settings, deps) -> KmsSigner:
     import boto3  # the `aws` extra
+    from botocore.config import Config
 
-    client = boto3.client("kms", region_name=settings.region)
+    # Checkpoints are signed inline every N audit rows: bounded, not botocore's 60 s defaults.
+    config = Config(connect_timeout=3, read_timeout=5, retries={"max_attempts": 2})
+    client = boto3.client("kms", region_name=settings.region, config=config)
     return probe(KmsSigner(settings.key_id, client), "signer aws_kms")
 
 

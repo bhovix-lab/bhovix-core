@@ -193,7 +193,7 @@ def test_a_damaged_database_is_a_finding_not_a_crash(key):
     log = _log(key)
     log._db.conn.close()
     result = log.verify()
-    assert not result.ok
+    assert not result.ok and result.unreadable
     assert "cannot be read" in result.problems[0]
 
 
@@ -219,8 +219,12 @@ def test_audit_verify_exits_0_when_intact_and_1_when_tampered(key, capsys):
     _raw(log).execute("UPDATE audit_entries SET kind = 'nothing' WHERE seq = 1")
     assert cli.audit_verify(log) == 1
     out = capsys.readouterr().out
-    assert "TAMPERED: row 1 was changed after it was written" in out
+    assert "PROBLEM: row 1 was changed after it was written" in out
     assert "NOT intact" in out
+    log._db.conn.close()  # an outage is "could not verify" (exit 3), never reported as tampering
+    assert cli.audit_verify(log) == 3
+    out = capsys.readouterr().out
+    assert "could not verify: the audit cannot be read" in out and "PROBLEM" not in out
 
 
 def test_audit_verify_refuses_a_memory_store(tmp_path, capsys, monkeypatch):
@@ -289,7 +293,8 @@ def test_the_backend_table_builds_the_kms_signer_and_the_anchor_from_config(monk
     real_client = boto3.client
 
     def fake_client(service, **kw):
-        made.append((service, kw.get("region_name")))
+        c = kw["config"]  # bounded: checkpoints are signed and anchored inline
+        made.append((service, kw.get("region_name"), c.connect_timeout, c.read_timeout))
         return client if service == "kms" else real_client(service, **kw)
 
     monkeypatch.setattr(boto3, "client", fake_client)
@@ -305,7 +310,7 @@ def test_the_backend_table_builds_the_kms_signer_and_the_anchor_from_config(monk
         "GOVERNANCE",
         timedelta(days=30),
     )
-    assert made == [("kms", REGION), ("s3", REGION)]
+    assert made == [("kms", REGION, 3, 5), ("s3", REGION, 3, 5)]
     with pytest.raises(ConfigError, match="needs a signer"):
         make("audit", ChainSettings(kind="chain", anchor=anchor), store=store)
 

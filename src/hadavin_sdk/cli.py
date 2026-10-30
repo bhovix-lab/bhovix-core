@@ -2,7 +2,7 @@
 
   hadavin-sdk [--config DIR] gate <agent>                exit 0 when green, 1 when below the threshold
   hadavin-sdk [--config DIR] limits stop|reset --by WHO  refused until a shared store exists (exit 2)
-  hadavin-sdk [--config DIR] audit verify                exit 0 when the chain audit is intact, 1 when not
+  hadavin-sdk [--config DIR] audit verify                exit 0 intact, 1 not intact, 3 cannot be read
 
 ``--config`` goes before the subcommand and overrides ``HADAVIN_CONFIG_DIR``. From a source checkout use ``uv run python -m hadavin_sdk.cli`` so
 the current folder (and its check modules) is importable.
@@ -77,14 +77,18 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def audit_verify(audit) -> int:
-    """Recompute the chain, every checkpoint signature and every anchor. Exit 0 intact, 1 not."""
+    """Recompute the chain, every checkpoint signature and every anchor. Exit 0 intact, 1 not intact,
+    3 when the audit or its anchors cannot be read (an outage is not evidence of tampering)."""
     result = audit.verify()
+    if result.unreadable:
+        print(f"could not verify: {'; '.join(result.problems)}")
+        return 3
     print(
         f"{result.rows} rows, signed through row {result.signed_through} "
         f"({result.unsigned_tail} not signed yet)"
     )
     for problem in result.problems:
-        print(f"TAMPERED: {problem}")
+        print(f"PROBLEM: {problem}")
     print("intact" if result.ok else "NOT intact")
     return 0 if result.ok else 1
 

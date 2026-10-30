@@ -115,6 +115,9 @@ class Verification:
     rows: int = 0
     signed_through: int = 0
     problems: list[str] = field(default_factory=list)
+    unreadable: bool = (
+        False  # the audit or its anchors could not be read: not checked, not "tampered"
+    )
 
     @property
     def ok(self) -> bool:
@@ -315,7 +318,9 @@ class ChainAudit:
             anchors = self.anchor.all() if self.anchor is not None else None
         except Exception as exc:  # noqa: BLE001
             # The class only: driver messages can carry the host and user.
-            return Verification(problems=[f"the audit cannot be read ({type(exc).__name__})"])
+            return Verification(
+                problems=[f"the audit cannot be read ({type(exc).__name__})"], unreadable=True
+            )
         return verify_rows(rows, checkpoints, public, anchors)
 
 

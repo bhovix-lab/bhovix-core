@@ -58,10 +58,13 @@ class S3Anchor:
 def build(settings) -> S3Anchor:
     """From the chain's `anchor:` settings (`kind: s3_object_lock`)."""
     import boto3  # the `aws` extra
+    from botocore.config import Config
 
+    # Anchors are written inline every N audit rows: a slow S3 must cost seconds, not botocore's 60 s defaults.
+    config = Config(connect_timeout=3, read_timeout=5, retries={"max_attempts": 2})
     return S3Anchor(
         settings.bucket,
-        boto3.client("s3", region_name=settings.region),
+        boto3.client("s3", region_name=settings.region, config=config),
         mode=settings.mode,
         retain=timedelta(days=settings.retain_days),
     )
