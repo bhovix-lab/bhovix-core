@@ -2,8 +2,9 @@
 
 Copied from WARDEN `src/warden/redaction.py` at PR #206 head 14fc549 (branch `redaction-bank-patterns`,
 veerarakesh56/warden): the full pattern table, including the bank codes (BANKCODE: BSB, sort code, ABA,
-CA transit/institution) and accounts (BANKACCT), and the PHONE date guard. Edits: this header, and
-`RedactionResult.kinds` (the slice 1 callers read the kinds found). Placeholders are `<KIND_n>`.
+CA transit/institution) and accounts (BANKACCT), and the PHONE date guard. Edits: this header,
+`RedactionResult.kinds` (the slice 1 callers read the kinds found), and a PHONE guard for compact
+14-digit timestamps. Placeholders are `<KIND_n>`.
 The WARDEN module notes follow.
 
 Every string is scrubbed before it can reach the model. Patterns FIND values; a final sweep then masks
@@ -437,10 +438,15 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     #   - nor may it run INTO a date: `task 4471 2026-09-11T18:09:10Z` lost its number and half its timestamp to
     #     `<PHONE_1>-11T18:09:10Z` (the 30 recorded incidents, read 2026-10-11). A phone number before a date is still
     #     masked, up to the date.
+    #   - (hadavin-sdk edit) nor may it be a compact timestamp `YYYYMMDDhhmmss` (`20261030123456`): 14 digits
+    #     with a valid month, day and time. Narrow on purpose: a phone written with `+` or of another length is
+    #     still masked.
     (
         "PHONE",
         re.compile(
-            r"(?<![\w.\-])(?!\d{4}-\d\d-\d\d)\+?\d(?:(?!\d{4}-\d\d-\d\d)[\d \-]){8,14}\d(?![\w.])"
+            r"(?<![\w.\-])(?!\d{4}-\d\d-\d\d)"
+            r"(?!(?:19|20)\d\d(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])(?:[01]\d|2[0-3])[0-5]\d[0-5]\d(?!\d))"
+            r"\+?\d(?:(?!\d{4}-\d\d-\d\d)[\d \-]){8,14}\d(?![\w.])"
         ),
     ),
     # password=..., secret: ..., aws_secret_access_key="...": the value after a credential-ish key.

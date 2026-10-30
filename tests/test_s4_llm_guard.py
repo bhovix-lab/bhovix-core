@@ -156,3 +156,75 @@ def test_placeholders_are_numbered_and_stable():
     r = redact("mail jo@example.test then jo@example.test and al@example.test")
     assert r.text.count("<EMAIL_1>") == 2 and "<EMAIL_2>" in r.text
     assert r.restore(r.text) == "mail jo@example.test then jo@example.test and al@example.test"
+
+
+# P0 review (1): the id format is pinned, so the kept UUID pattern can never mask a Hadavin id
+def test_id_format_is_pinned_undashed_hex():
+    import re as _re
+
+    from hadavin_sdk.models import Plan, Target, new_id
+
+    for prefix in ("run", "pln", "apr", "evt"):
+        assert _re.fullmatch(prefix + r"-[0-9a-f]{32}", new_id(prefix))
+    plan = Plan(
+        run_id=new_id("run"),
+        agent_id="a",
+        action_id="create_draft_record",
+        action_version=1,
+        risk_class="reversible",
+        inputs={},
+        target=Target(system="s"),
+        idempotency_key="run-x:create_draft_record",
+        expected_outcome="x",
+    )
+    assert _re.fullmatch(r"[0-9a-f]{64}", plan.hash())
+    uuid_shape = _re.compile(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    )
+    for value in (plan.run_id, plan.plan_id, plan.hash(), f"{plan.run_id}:create_draft_record"):
+        assert not uuid_shape.search(value)
+        assert redact(value).text == value
+
+
+# P0 review (2): compact timestamps are not phone numbers; real phones still are
+@pytest.mark.parametrize("ts", ["20261030123456", "19991231235959", "run at 20260101000000 ok"])
+def test_compact_timestamps_are_not_phone_numbers(ts):
+    assert redact(ts).text == ts
+
+
+@pytest.mark.parametrize(
+    "phone", ["+12025550123", "+44 20 7946 0958", "02079460958", "+61412345678", "4155550132"]
+)
+def test_real_phone_numbers_still_masked(phone):
+    r = redact(f"call {phone} today")
+    assert phone not in r.text and "PHONE" in r.kinds
+
+
+def test_invalid_compact_timestamp_shape_is_still_masked():
+    # 14 digits that are not a valid timestamp (month 13) stay masked as a number
+    assert "20261330123456" not in redact("id 20261330123456").text
+
+
+# P0 review (3): clean() terminates on adversarial nested input (the gate's fixed-point loop is bounded)
+def test_clean_terminates_on_adversarial_nesting():
+    import time
+
+    from hadavin_sdk.approvals.channel import clean
+
+    nested = "![a](" * 200 + "//evil%2Ecom/p.png" + ")" * 200
+    tangled = "".join(f"[x{i}](<!here>![y](//e{i}.example/{i}.png))" for i in range(300))
+    for text in (nested, tangled, "<" * 5000 + "!here>" * 50):
+        start = time.monotonic()
+        out = clean(text)
+        assert time.monotonic() - start < 5
+        assert "//evil" not in out and "](//" not in out
+
+
+# CodeRabbit on PR #6: sanitising can join a secret split by an invisible or control character
+@pytest.mark.parametrize("sep", ["\u200b", "\x07", chr(0x200E), "<b></b>"])
+def test_clean_masks_a_secret_rejoined_by_sanitising(sep):
+    from hadavin_sdk.approvals.channel import clean
+
+    key = "AKIA" + "IOSFODNN7EXAMPLE"  # AWS's documented example key, built from parts
+    out = clean("key " + "AKIA" + sep + "IOSFODNN7EXAMPLE" + " end")
+    assert key not in out

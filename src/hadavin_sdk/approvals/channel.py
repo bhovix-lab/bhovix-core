@@ -13,7 +13,11 @@ from hadavin_sdk.models import ApprovalDecision, ApprovalRequest
 def clean(text: str) -> str:
     """Redact, then WARDEN's G3 cleaning (`gate.sanitise_text`): no link, image, HTML, mention, control
     character or forged markdown structure survives in text a person acts on."""
-    return sanitise_text(redact(text).text)
+    first = redact(text)
+    # Sanitising removes invisible and control characters and tags, which can join a split secret
+    # (`AKIA` + zero-width space + `IOSF...`): redact the cleaned text again (WARDEN's G5 re-scan), in the
+    # same placeholder namespace.
+    return redact(sanitise_text(first.text), mapping=first.mapping).text
 
 
 class Channel(Protocol):
