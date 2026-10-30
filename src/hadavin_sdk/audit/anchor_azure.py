@@ -61,7 +61,12 @@ class AzureBlobAnchor:
 def build(settings, deps) -> AzureBlobAnchor:
     """`backends.anchor: {kind: azure_immutable_blob, ...}`."""
     container = ContainerClient(
-        settings.account_url, settings.container, credential=DefaultAzureCredential()
+        settings.account_url,
+        settings.container,
+        credential=DefaultAzureCredential(),
+        connection_timeout=3,  # anchors are written inline: seconds, not the SDK defaults
+        read_timeout=5,
+        retry_total=2,
     )
     return probed(container, settings)
 

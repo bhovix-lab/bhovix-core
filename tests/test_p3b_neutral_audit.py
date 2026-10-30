@@ -122,10 +122,20 @@ def test_vault_transit_builds_from_settings_and_pins_the_key_version(monkeypatch
 def test_azure_signer_needs_a_pinned_version_and_an_ec_p256_key(monkeypatch):
     good, wrong_curve = azure_key_clients(AZURE_KEY), azure_key_clients(AZURE_KEY, curve="P-384")
     pick = {"clients": good}  # built before patching: the patch replaces the SDK's KeyClient itself
-    monkeypatch.setattr(signer_azure, "CryptographyClient", lambda key_id, cred: pick["clients"][0])
-    monkeypatch.setattr(signer_azure.azure_keys, "KeyClient", lambda url, cred: pick["clients"][1])
+    limits = []
+    monkeypatch.setattr(
+        signer_azure,
+        "CryptographyClient",
+        lambda key_id, cred, **kw: limits.append(kw) or pick["clients"][0],
+    )
+    monkeypatch.setattr(
+        signer_azure.azure_keys,
+        "KeyClient",
+        lambda url, cred, **kw: limits.append(kw) or pick["clients"][1],
+    )
     signer = make("signer", AzureKeyVaultKeySettings(kind="azure_key_vault_key", key_id=AZURE_KEY))
     assert signer.alg == "ecdsa-p256"
+    assert limits == [signer_azure._BOUNDED] * 2  # seconds, not the SDK defaults
     with pytest.raises(ValueError):  # no version: a rotation would orphan old checkpoints
         AzureKeyVaultKeySettings(
             kind="azure_key_vault_key", key_id="https://kv.vault.azure.net/keys/audit"

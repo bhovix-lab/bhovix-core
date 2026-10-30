@@ -25,6 +25,10 @@ _RAW = (serialization.Encoding.Raw, serialization.PublicFormat.Raw)
 _ED25519 = kms.CryptoKeyVersion.CryptoKeyVersionAlgorithm.EC_SIGN_ED25519
 
 
+# Checkpoints are signed inline every N audit rows: one bounded try, not the 60 s default deadline.
+_BOUNDED = {"timeout": 5, "retry": None}
+
+
 class GcpKmsSigner:
     alg: Literal["ed25519"] = "ed25519"
 
@@ -33,11 +37,12 @@ class GcpKmsSigner:
         self._public: bytes | None = None
 
     def sign(self, message: bytes) -> bytes:
-        return self._kms.asymmetric_sign(request={"name": self.key_id, "data": message}).signature
+        request = {"name": self.key_id, "data": message}
+        return self._kms.asymmetric_sign(request=request, **_BOUNDED).signature
 
     def public_key(self) -> bytes:
         if self._public is None:  # a key version's public half never changes
-            out = self._kms.get_public_key(request={"name": self.key_id})
+            out = self._kms.get_public_key(request={"name": self.key_id}, **_BOUNDED)
             key = serialization.load_pem_public_key(out.pem.encode("utf-8"))
             if out.algorithm != _ED25519 or not isinstance(key, ed25519.Ed25519PublicKey):
                 raise ConfigError(f"signer gcp_kms: {self.key_id} is not an EC_SIGN_ED25519 key")

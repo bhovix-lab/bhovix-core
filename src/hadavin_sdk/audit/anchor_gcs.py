@@ -19,6 +19,9 @@ from google.cloud import storage
 from hadavin_sdk.audit import anchors
 from hadavin_sdk.errors import ConfigError
 
+# Anchors are written inline every N audit rows: one bounded try (a lost answer is caught by the 412 check).
+_BOUNDED = {"timeout": 5, "retry": None}
+
 
 class GcsAnchor:
     def __init__(self, bucket: Any) -> None:
@@ -28,14 +31,17 @@ class GcsAnchor:
         name, data = anchors.key(seq), anchors.body(seq, head, signature)
         blob = self._bucket.blob(name)
         try:
-            blob.upload_from_string(data, content_type="application/json", if_generation_match=0)
+            blob.upload_from_string(
+                data, content_type="application/json", if_generation_match=0, **_BOUNDED
+            )
         except PreconditionFailed:
-            anchors.already_there(self._bucket.blob(name).download_as_bytes(), data, seq)
+            existing = self._bucket.blob(name).download_as_bytes(**_BOUNDED)
+            anchors.already_there(existing, data, seq)
 
     def all(self) -> dict[int, tuple[str, str]]:
         out: dict[int, tuple[str, str]] = {}
-        for blob in self._bucket.list_blobs(prefix=anchors.PREFIX):
-            seq, pair = anchors.parse(blob.download_as_bytes())
+        for blob in self._bucket.list_blobs(prefix=anchors.PREFIX, **_BOUNDED):
+            seq, pair = anchors.parse(blob.download_as_bytes(**_BOUNDED))
             out[seq] = pair
         return out
 
@@ -53,7 +59,7 @@ def build(settings, deps) -> GcsAnchor:
 
 def probed(bucket: Any, settings) -> GcsAnchor:
     try:
-        bucket.reload()
+        bucket.reload(**_BOUNDED)
     except Exception as exc:  # noqa: BLE001 - any SDK or network error: a start-up ConfigError
         raise ConfigError(
             f"audit anchor gcs_retention_lock: cannot read the bucket ({type(exc).__name__})"

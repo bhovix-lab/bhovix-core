@@ -22,6 +22,9 @@ from azure.keyvault.keys.crypto import CryptographyClient, SignatureAlgorithm
 from hadavin_sdk.audit.signer import probe
 from hadavin_sdk.errors import ConfigError
 
+# Checkpoints are signed inline every N audit rows: seconds, not the SDK defaults (300 s, 10 retries).
+_BOUNDED = {"connection_timeout": 3, "read_timeout": 5, "retry_total": 2}
+
 
 class AzureKeyVaultSigner:
     alg: Literal["ecdsa-p256"] = "ecdsa-p256"
@@ -54,7 +57,7 @@ def build(settings, deps) -> AzureKeyVaultSigner:
     credential = DefaultAzureCredential()
     signer = AzureKeyVaultSigner(
         settings.key_id,
-        CryptographyClient(settings.key_id, credential),
-        azure_keys.KeyClient(ident.vault_url, credential),
+        CryptographyClient(settings.key_id, credential, **_BOUNDED),
+        azure_keys.KeyClient(ident.vault_url, credential, **_BOUNDED),
     )
     return probe(signer, "signer azure_key_vault_key")
