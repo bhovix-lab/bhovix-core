@@ -8,7 +8,7 @@ from hadavin_sdk.store.protocol import Store
 S = RunState
 
 ALLOWED: dict[RunState, frozenset[RunState]] = {
-    S.RECEIVED: frozenset({S.WORKING}),
+    S.RECEIVED: frozenset({S.WORKING, S.NEEDS_PERSON}),  # NEEDS_PERSON: tick found it stuck
     S.WORKING: frozenset({S.NO_ACTION, S.PLAN_READY, S.NEEDS_PERSON}),
     S.PLAN_READY: frozenset({S.DENIED, S.WAITING_FOR_APPROVAL, S.EXECUTING, S.NEEDS_PERSON}),
     # NEEDS_PERSON: the execute intent cannot be audited after approval (CUJ 5), so nothing runs.

@@ -146,6 +146,8 @@ class ApprovalRequest(Shape):
     requested_by: str
     summary: str
     created_at: datetime = Field(default_factory=now)
+    sent_at: datetime | None = None  # None: the channel send failed; tick resends
+    channel_ref: str | None = None  # the channel's message id (Slack: the message ts), for updates
 
 
 class ApprovalDecision(Shape):
@@ -182,6 +184,16 @@ class DeadLetter(Shape):
     reason: str
     errors: list[str]
     ts: datetime = Field(default_factory=now)
+
+
+class TickState(BaseModel):
+    """One tick step's last run (table tick_state)."""
+
+    model_config = ConfigDict(extra="forbid")
+    step: str
+    last_run_at: datetime
+    last_ok_at: datetime | None = None
+    last_error: str | None = None
 
 
 class KillSwitch(Shape):

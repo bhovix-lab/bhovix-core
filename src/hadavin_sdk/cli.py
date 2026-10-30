@@ -2,6 +2,9 @@
 
   hadavin-sdk [--config DIR] gate <agent>                exit 0 when green, 1 when below the threshold
   hadavin-sdk [--config DIR] limits stop|reset --by WHO  needs a shared store (postgres); memory: exit 2
+  hadavin-sdk [--config DIR] tick                       one pass of approvals sweep, reconcile, stuck runs,
+                                                         audit checkpoint; exit 0 ok, 1 a step failed,
+                                                         2 config error, 3 store unreachable
   hadavin-sdk [--config DIR] migrate [--runtime-role R]  apply the postgres schema; the migration role's DSN
                                                          comes from the HADAVIN_MIGRATE_DSN environment variable
   hadavin-sdk [--config DIR] audit verify                exit 0 intact, 1 not, 2 refused, 3 unreadable
@@ -34,6 +37,7 @@ def main(argv: list[str] | None = None) -> int:
     lim = sub.add_parser("limits", help="kill switch")
     lim.add_argument("action", choices=["stop", "reset"])
     lim.add_argument("--by", required=True)
+    sub.add_parser("tick", help="one pass of the housekeeping steps (run every 30-60 s)")
     mig = sub.add_parser("migrate", help="apply the postgres store schema (migration role)")
     mig.add_argument("--runtime-role", help="grant this database role SELECT, INSERT, UPDATE")
     aud = sub.add_parser("audit", help="check the chain audit")
@@ -41,6 +45,8 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
     if args.config:
         os.environ["HADAVIN_CONFIG_DIR"] = args.config
+    if args.cmd == "tick":
+        return _tick()
     cfg = load_config()
     if args.cmd == "migrate":
         return _migrate(cfg, args.runtime_role)
@@ -92,6 +98,37 @@ def main(argv: list[str] | None = None) -> int:
     return kill_switch(Limits(store, audit, reg), args.action, args.by)
 
 
+def _tick() -> int:
+    """Build the app with every qualified agent (an unqualified one must not stop approvals expiring)."""
+    from hadavin_sdk.app import build
+    from hadavin_sdk.runtime.agent_loop import Unqualified, assert_qualified
+    from hadavin_sdk.runtime.tick import run_tick
+    from hadavin_sdk.store.protocol import StoreUnavailable
+
+    try:
+        reg = load_registry(load_config())
+        agents = []
+        for agent_id in reg.agents:
+            try:
+                assert_qualified(reg, agent_id)
+                agents.append(agent_id)
+            except Unqualified:
+                print(
+                    f"tick: {agent_id} is not qualified; its new runs are refused", file=sys.stderr
+                )
+        app = build(None, agents)
+    except StoreUnavailable as exc:
+        print(f"tick: {exc}", file=sys.stderr)
+        return 3
+    except ConfigError as exc:
+        print(f"tick: config error: {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:  # noqa: BLE001 - any other start-up failure is a config error, never "1"
+        print(f"tick: config error: {type(exc).__name__}", file=sys.stderr)
+        return 2
+    return run_tick(app)
+
+
 def _migrate(cfg, runtime_role: str | None) -> int:
     store = cfg.backends.store
     if store.kind != "postgres":
@@ -105,9 +142,23 @@ def _migrate(cfg, runtime_role: str | None) -> int:
         print("refused: set HADAVIN_MIGRATE_DSN to the migration role's DSN", file=sys.stderr)
         return 2
     from hadavin_sdk.store.migrate import migrate
+    from hadavin_sdk.store.postgres import ca_file
 
-    applied = migrate(dsn, runtime_role=runtime_role, iam_auth=store.iam_auth, region=store.region)
+    ca = ca_file(store, make("secrets", cfg.backends.secrets).get)
+    applied = migrate(
+        dsn,
+        runtime_role=runtime_role,
+        iam_auth=store.iam_auth,
+        region=store.region,
+        sslmode=store.sslmode,
+        sslrootcert=ca,
+    )
     print(f"applied: {', '.join(applied) or 'nothing (up to date)'}")
+    if applied and not runtime_role:
+        print(
+            "warning: new tables have no runtime grants; run again with --runtime-role <role>",
+            file=sys.stderr,
+        )
     return 0
 
 

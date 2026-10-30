@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
 
@@ -21,6 +22,8 @@ from hadavin_sdk.registry import Registry
 from hadavin_sdk.store.protocol import StaleState, Store
 
 OnDecided = Callable[[str, str, ApprovalDecision | None], object]
+_LOG = logging.getLogger("hadavin_sdk.approvals")
+RESEND_AFTER = timedelta(seconds=60)  # more than 2x a channel call's timeout
 
 
 WARNING = "WARNING: the inputs read like instructions to an AI. Check them before approving. "
@@ -55,12 +58,15 @@ class Approvals:
         self.store, self.audit, self.registry, self.channel = store, audit, registry, channel
         self.on_decided, self.clock, self.detector = on_decided, clock, detector
 
-    def receive(self, headers: Mapping[str, str], body: bytes) -> tuple[bool, str]:
-        """Entry point for a channel callback: the channel verifies the request and names the approver."""
+    def receive(
+        self, headers: Mapping[str, str], body: bytes, *, record_only: bool = False
+    ) -> tuple[bool, str]:
+        """Entry point for a channel callback: the channel verifies the request and names the approver.
+        The HTTP receiver passes ``record_only=True``: it records and answers fast; ``tick`` runs the plan."""
         d = self.channel.parse_decision(headers, body, self.clock().timestamp())
         if d is None:
             return False, "bad_signature"
-        return self.decide(d)
+        return self.decide(d, record_only=record_only)
 
     def _audit(self, req: ApprovalRequest, operation: str, principal: str, **kw) -> None:
         self.audit.write_outcome(
@@ -89,11 +95,46 @@ class Approvals:
             summary=summary(plan, self.detector),
         )
         self.store.save_approval_request(req)
-        self.channel.send(req, chain.steps[0].approver_ids)
+        req = self._send(req, chain.steps[0].approver_ids)
         self._audit(req, "request", requested_by, result="PENDING")
         return req
 
-    def decide(self, d: ApprovalDecision) -> tuple[bool, str]:
+    def _send(self, req: ApprovalRequest, approver_ids: list[str]) -> ApprovalRequest:
+        """Send, then record `sent_at` and the channel's message id. A failed send leaves `sent_at` empty,
+        the request stays PENDING and ``resend_unsent`` (a tick step) tries again."""
+        try:
+            ref = self.channel.send(req, approver_ids)
+        except Exception as exc:  # noqa: BLE001 - any channel failure: keep the request, resend later
+            _LOG.warning(
+                "approval %s: channel send failed (%s); tick will resend",
+                req.approval_id,
+                type(exc).__name__,
+            )
+            return req
+        sent = req.model_copy(update={"sent_at": self.clock(), "channel_ref": ref})
+        try:
+            self.store.update_approval_request(sent, req.status, req.current_step)
+        except StaleState:  # decided or escalated meanwhile: the newer row wins
+            return self.store.get_approval_request(req.approval_id)
+        return sent
+
+    def resend_unsent(self, at: datetime | None = None) -> list[str]:
+        """PENDING requests whose send failed (`sent_at` empty) for at least RESEND_AFTER since their step
+        began (a send still in flight is left alone): send them again. Returns approval ids."""
+        at = at or self.clock()
+        sent = []
+        for req in self.store.list_approvals({"PENDING"}):
+            step = req.steps[req.current_step]
+            began = req.step_expires_at - timedelta(seconds=step.timeout_s)
+            due = req.sent_at is None and at - began >= RESEND_AFTER
+            if due and self._send(req, step.approver_ids).sent_at:
+                sent.append(req.approval_id)
+        # ponytail: a send that reached Slack but timed out on the reply is sent again (a duplicate message;
+        # both carry the same valid buttons). An idempotency key needs the channel to support one.
+        return sent
+
+    def decide(self, d: ApprovalDecision, *, record_only: bool = False) -> tuple[bool, str]:
+        """Check and record one decision. ``record_only``: leave running the plan to ``tick`` reconcile."""
         req = self.store.get_approval_request(d.approval_id)
         reason = None
         if req.status != "PENDING":
@@ -114,14 +155,28 @@ class Approvals:
         status = "APPROVED" if d.decision == "approve" else "REJECTED"
         new = req.model_copy(update={"status": status})
         try:
-            self.store.update_approval_request(new, "PENDING", req.current_step)
+            # One atomic write: the decision (one per approval step) and the status compare-and-set. Of two
+            # racing clicks, or a click racing the sweep, exactly one is kept, and nothing of the loser.
+            self.store.record_decision(d, new, "PENDING", req.current_step)
         except StaleState:
             return False, "stale"
-        self.store.save_approval_decision(d)
         self._audit(req, "decide", d.approver_id, decision=d.decision, result=status)
-        self.channel.update(new)
+        if (
+            record_only
+        ):  # the receiver must answer fast: tick reconcile updates the message and runs it
+            return True, status.lower()
+        self.update_message(new)
         self.on_decided(req.run_id, status, d)
         return True, status.lower()
+
+    def update_message(self, req: ApprovalRequest) -> None:
+        """Show the outcome in the channel; a failure is logged (the decision is already recorded)."""
+        try:
+            self.channel.update(req)
+        except Exception as exc:  # noqa: BLE001 - a stale message is cosmetic
+            _LOG.warning(
+                "approval %s: channel update failed (%s)", req.approval_id, type(exc).__name__
+            )
 
     def sweep(self, at: datetime | None = None) -> list[str]:
         """Escalate each due request one step; after the last step it expires. Returns approval ids touched."""
@@ -134,6 +189,7 @@ class Approvals:
                     update={
                         "current_step": nxt,
                         "step_expires_at": at + timedelta(seconds=req.steps[nxt].timeout_s),
+                        "sent_at": None,  # the next step's approvers have not been asked yet
                     }
                 )
                 status = "PENDING"
@@ -146,13 +202,20 @@ class Approvals:
                 continue
             self._audit(req, "sweep", "system", result=status, decision=f"step{new.current_step}")
             if status == "PENDING":
-                self.channel.send(new, req.steps[nxt].approver_ids)
+                self._send(new, req.steps[nxt].approver_ids)
             else:
-                self.channel.update(new)
-                self.channel.notify(
-                    req.requested_by,
-                    f"Approval {req.approval_id} expired with no decision. Nothing was run.",
-                )
-                self.on_decided(req.run_id, "EXPIRED", None)
+                self.update_message(new)
+                try:
+                    self.channel.notify(
+                        req.requested_by,
+                        f"Approval {req.approval_id} expired with no decision. Nothing was run.",
+                    )
+                    self.on_decided(req.run_id, "EXPIRED", None)
+                except Exception as exc:  # noqa: BLE001 - tick reconcile ends the run if this failed
+                    _LOG.warning(
+                        "approval %s: expiry follow-up failed (%s)",
+                        req.approval_id,
+                        type(exc).__name__,
+                    )
             touched.append(req.approval_id)
         return touched

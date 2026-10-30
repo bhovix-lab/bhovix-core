@@ -108,17 +108,28 @@ class LocalDirSettings(KindSettings):
     dir: Path
 
 
+SslMode = Literal["disable", "allow", "prefer", "require", "verify-ca", "verify-full"]
+
+
 class PostgresSettings(KindSettings):
     dsn_secret_name: str
     iam_auth: bool = (
         False  # RDS IAM login: no database password anywhere (needs the `aws` extra too)
     )
     region: str | None = None
+    # None: `verify-full` for any non-local host; loopback and sockets keep the DSN's. Setting a weaker mode
+    # (`require`, `disable`) is an explicit opt-down for dev, refused with iam_auth.
+    sslmode: SslMode | None = None
+    # The server's CA bundle, cloud-neutral: a file path, or a PEM held in any secrets kind.
+    sslrootcert: str | None = None
+    sslrootcert_secret_name: str | None = None
 
     @model_validator(mode="after")
-    def _iam_needs_region(self) -> PostgresSettings:
+    def _checks(self) -> PostgresSettings:
         if self.iam_auth and not self.region:
             raise ValueError("iam_auth needs region (and pip install hadavin-sdk[aws])")
+        if self.sslrootcert and self.sslrootcert_secret_name:
+            raise ValueError("set sslrootcert or sslrootcert_secret_name, not both")
         return self
 
 
@@ -129,6 +140,57 @@ class EnvSecretsSettings(KindSettings):
 class AwsSecretsManagerSettings(KindSettings):
     region: str
     ttl_s: float = Field(default=300, ge=0)  # 0 = no cache
+
+
+_TTL = Field(default=300, ge=0)  # seconds a secret value is cached; 0 = no cache
+
+
+class VaultSettings(KindSettings):
+    address: str  # https; plain http only to this machine (a dev server)
+    auth: Literal["token", "approle", "kubernetes"] = "token"
+    mount: str = Field(default="secret", pattern=r"^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$")
+    path_prefix: str = Field(default="", pattern=r"^([A-Za-z0-9_.-]+/)*$")  # e.g. "hadavin/acme/"
+    field: str = "value"
+    namespace: str | None = None
+    token_env: str = "VAULT_TOKEN"  # noqa: S105 - auth token: the variable name
+    role_id: str | None = None  # auth: approle (an identifier, not a secret)
+    secret_id_env: str = "VAULT_SECRET_ID"  # noqa: S105 - auth approle: the variable name
+    role: str | None = None  # auth: kubernetes
+    jwt_path: Path = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")  # auth: kubernetes
+    # Default: the auth name. Nested mounts (e.g. team-a/kubernetes) are allowed.
+    auth_mount: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+)*$")
+    ca_cert: Path | None = None
+    timeout_s: float = Field(default=10.0, gt=0)
+    ttl_s: float = _TTL
+
+    @model_validator(mode="after")
+    def _checks(self) -> VaultSettings:
+        url = urlsplit(self.address)
+        if url.scheme != "https" and not (url.scheme == "http" and url.hostname in _LOOPBACK):
+            raise ValueError("address must be https (plain http only to this machine)")
+        segments = {*self.mount.split("/"), *self.path_prefix.split("/")}
+        segments |= set((self.auth_mount or "").split("/"))
+        if {".", ".."} & segments:
+            raise ValueError("mount, path_prefix and auth_mount may not hold '.' or '..' segments")
+        need = {"token": [], "approle": ["role_id"], "kubernetes": ["role"]}[self.auth]
+        if missing := [n for n in need if not getattr(self, n)]:
+            raise ValueError(f"auth {self.auth} needs: {', '.join(missing)}")
+        return self
+
+
+class AzureKeyVaultSettings(KindSettings):
+    vault_url: str = Field(pattern=r"^https://")  # e.g. https://<vault-name>.vault.azure.net
+    ttl_s: float = _TTL
+
+
+class GcpSecretManagerSettings(KindSettings):
+    project_id: str = Field(pattern=_NAME)
+    ttl_s: float = _TTL
+
+
+class MountedFileSettings(KindSettings):
+    dir: Path
+    ttl_s: float = _TTL
 
 
 class S3ObjectLockSettings(KindSettings):
@@ -156,6 +218,14 @@ class Ed25519LocalSettings(KindSettings):
 class AwsKmsSettings(KindSettings):
     key_id: str
     region: str
+
+
+class SlackSettings(KindSettings):
+    channel_id: str
+    signing_secret_name: str
+    bot_token_secret_name: str
+    api_base: str = "https://slack.com/api"
+    timeout_s: float = Field(default=10.0, gt=0, le=60)
 
 
 class FakeChannelSettings(KindSettings):
@@ -201,6 +271,7 @@ def _chain_hosts(s: Any) -> list[str]:
 
 _BUILTIN = "hadavin_sdk.backends.builtin"
 _UNVERIFIED = "slice2-unverified"
+_ACTIONS = "hadavin_sdk.actions"
 _SIGNER = "hadavin_sdk.audit.signer"
 
 # Build order (design §4.2): each capability may use only what is built before it, as ALLOWED says.
@@ -216,6 +287,22 @@ TABLE: dict[str, dict[str, Entry]] = {
             extra="aws",
             status=_UNVERIFIED,
             hosts=_aws("secretsmanager"),
+        ),
+        "vault": Entry(VaultSettings, f"{_ACTIONS}.secrets_vault:build", status=_UNVERIFIED),
+        "azure_key_vault": Entry(
+            AzureKeyVaultSettings,
+            f"{_ACTIONS}.secrets_azure:build",
+            extra="azure",
+            status=_UNVERIFIED,
+        ),
+        "gcp_secret_manager": Entry(
+            GcpSecretManagerSettings,
+            f"{_ACTIONS}.secrets_gcp:build",
+            extra="gcp",
+            status=_UNVERIFIED,
+        ),
+        "mounted_file": Entry(
+            MountedFileSettings, f"{_ACTIONS}.secrets_file:build", status=_UNVERIFIED
         ),
     },
     "signer": {
@@ -293,7 +380,12 @@ TABLE: dict[str, dict[str, Entry]] = {
             ],
         ),
     },
-    "channel": {"fake": Entry(FakeChannelSettings, f"{_BUILTIN}:fake_channel")},
+    "channel": {
+        "fake": Entry(FakeChannelSettings, f"{_BUILTIN}:fake_channel"),
+        "slack": Entry(
+            SlackSettings, "hadavin_sdk.approvals.slack_channel:build", status=_UNVERIFIED
+        ),
+    },
 }
 
 # The Deps fields a factory of each capability may see (besides its own bound `resolve`).

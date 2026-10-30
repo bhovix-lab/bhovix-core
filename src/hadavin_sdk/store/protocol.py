@@ -6,6 +6,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Protocol
 
+from hadavin_sdk.errors import ConfigError
 from hadavin_sdk.models import (
     ApprovalDecision,
     ApprovalRequest,
@@ -16,11 +17,16 @@ from hadavin_sdk.models import (
     Plan,
     Run,
     RunState,
+    TickState,
 )
 
 
 class StaleState(RuntimeError):
     """Compare-and-set failed: the row changed since it was read."""
+
+
+class StoreUnavailable(ConfigError):
+    """The store cannot be reached (`tick` exits 3; nothing was changed)."""
 
 
 class NotFound(KeyError):
@@ -49,7 +55,10 @@ class Store(Protocol):
     def save_plan(self, plan: Plan) -> None: ...
     def get_plan(self, run_id: str) -> Plan: ...
 
-    def save_gate_decision(self, decision: GateDecision) -> None: ...
+    def save_gate_decision(self, decision: GateDecision) -> None:
+        """Once per run (append-only): a second one raises StaleState."""
+        ...
+
     def get_gate_decision(self, run_id: str) -> GateDecision: ...
 
     def save_approval_request(self, req: ApprovalRequest) -> None: ...
@@ -57,8 +66,22 @@ class Store(Protocol):
     def update_approval_request(
         self, req: ApprovalRequest, expected_status: str, expected_step: int
     ) -> None: ...
+    def record_decision(
+        self,
+        decision: ApprovalDecision,
+        req: ApprovalRequest,
+        expected_status: str,
+        expected_step: int,
+    ) -> None:
+        """Atomically: save the decision (one per approval step) and compare-and-set the request. Either
+        both happen or neither (StaleState): no decision row is ever kept for a click that lost."""
+        ...
+
     def list_due_approvals(self, now: datetime) -> list[ApprovalRequest]: ...
-    def save_approval_decision(self, decision: ApprovalDecision) -> None: ...
+    def save_approval_decision(self, decision: ApprovalDecision) -> None:
+        """One per (approval_id, step): a second one raises StaleState."""
+        ...
+
     def get_approval_decision(self, approval_id: str) -> ApprovalDecision | None:
         """The latest accepted decision for a request, or None (tick reconcile after a crash)."""
         ...
@@ -73,5 +96,10 @@ class Store(Protocol):
         """(day, month) totals; a read with no write."""
         ...
 
-    def get_kill_switch(self) -> KillSwitch: ...
+    def get_kill_switch(self) -> KillSwitch:
+        """A missing or unreadable switch row reads as ON (fail closed)."""
+        ...
+
     def set_kill_switch(self, ks: KillSwitch) -> None: ...
+    def get_tick_state(self, step: str) -> TickState | None: ...
+    def save_tick_state(self, state: TickState) -> None: ...

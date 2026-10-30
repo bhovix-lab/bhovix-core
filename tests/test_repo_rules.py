@@ -99,6 +99,11 @@ SECRET_HOLDERS = {
     "hadavin_sdk.actions.secrets",
     "hadavin_sdk.actions.secrets_env",
     "hadavin_sdk.actions.secrets_aws",
+    "hadavin_sdk.actions.secrets_vault",
+    "hadavin_sdk.actions.secrets_azure",
+    "hadavin_sdk.actions.secrets_gcp",
+    "hadavin_sdk.actions.secrets_file",
+    "hadavin_sdk.actions.secrets_cache",
     "hadavin_sdk.actions.executor",
     "hadavin_sdk.backends.platform_secrets",  # backends' own secrets (design 4.4)
 }

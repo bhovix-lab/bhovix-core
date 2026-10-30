@@ -40,6 +40,16 @@
   `openai_compat` included, so the cloud-neutral production detectors are `regex` + `llm_judge`.
   `bedrock_guardrail` is AWS-only. The approval-summary screen runs without the judge: no agent can be
   charged there, and the judge already screens the document and tool output.
+- `hadavin-sdk tick` (slice 2 P7, v5 contract): one pass of isolated steps (`sweep`, `reconcile`, `stuck`,
+  `checkpoint`, then `heartbeat` last); a failing step is logged and recorded in `tick_state` and the others
+  still run. Exit 0 ok, 1 a step failed, 2 config error, 3 store unreachable. Later steps are appended to
+  `runtime.tick.STEPS`.
+- `slack` approval channel (`backends.channel: {kind: slack, channel_id, signing_secret_name,
+  bot_token_secret_name}`) and `approvals/receiver.py`: verified clicks are recorded only; `tick` runs the plan.
+- Migration `0003_approvals_tick.sql`: `approval_requests.sent_at` and `channel_ref` (a failed send is resent
+  by `tick`), one decision per approval step, an exact month spend counter, the kill switch row (a missing row
+  reads as ON), `tick_state`.
+
 - `postgres` store (`pip install hadavin-sdk[pg]`, slice 2 P2): `backends.store: {kind: postgres,
   dsn_secret_name, iam_auth, region}`; compare-and-set in SQL; RDS IAM login with `iam_auth: true`.
 - `hadavin-sdk migrate [--runtime-role R]`: forward-only schema (`store/migrations/0001_core.sql`) applied under
@@ -67,6 +77,14 @@
   - the ARN redaction now masks account-less ARNs (`arn:aws:s3:::bucket`) and the `aws-cn` and `aws-us-gov`
     partitions;
   - `llm/retry.py` names no vendor: each llm kind says which of its SDK's errors are retryable.
+- Postgres TLS (slice 2 P7): `verify-full` by default for any non-local host, with the server's CA bundle
+  from `sslrootcert` (a file) or `sslrootcert_secret_name` (a PEM in any secrets backend); an explicit weaker
+  `sslmode` is a dev opt-down. With `iam_auth` only `verify-full`/`verify-ca`, and a runtime DSN with a
+  password is refused.
+- The runtime role gets SELECT, INSERT only on `approval_decisions`, `dead_letters`, `gate_decisions`.
+- Gate decisions are written once per run; a run stuck in `RECEIVED` or `PLAN_READY` can go to `NEEDS_PERSON`.
+- Approver ids carry the channel kind's name (`slack:<id>`, `fake:<id>`); request signing is the shared
+  `approvals/hmac_v0.py`, not borrowed from Slack.
 - `ProviderExhausted` from the model ends the run in `NEEDS_PERSON provider_exhausted` instead of escaping.
 - A provider that refuses the request (`ProviderError`, e.g. a bad key) ends the run in
   `NEEDS_PERSON provider_error`; `ProviderExhausted` is now a `ProviderError`.
@@ -93,3 +111,16 @@
   cache), a missing secret is a `ConfigError` at the start-up probe, values are never logged.
 - `backends.secrets: {kind: env, prefix: HADAVIN_SECRET_}` (dev only): `fixture-token` reads
   `HADAVIN_SECRET_FIXTURE_TOKEN`.
+
+### Added (slice 2 P4b, `slice2-unverified` until a live run): cloud-neutral secret stores
+- `backends.secrets: {kind: vault, address, auth: token|approle|kubernetes, mount, path_prefix, field,
+  namespace, ca_cert}`: HashiCorp Vault or OpenBao KV v2 over the standard library (no extra); TLS always
+  verified, plain http only to this machine; a 403 signs in again once (approle, kubernetes).
+- `backends.secrets: {kind: azure_key_vault, vault_url}` (`pip install hadavin-sdk[azure]`):
+  `DefaultAzureCredential` (managed or workload identity).
+- `backends.secrets: {kind: gcp_secret_manager, project_id}` (`pip install hadavin-sdk[gcp]`): Application
+  Default Credentials (attached service account or workload identity), version `latest`.
+- `backends.secrets: {kind: mounted_file, dir}`: one file per secret (Kubernetes Secret, CSI driver, External
+  Secrets); paths stay inside the folder; on POSIX a world-readable file is refused (mount 0400/0440).
+- Every remote kind shares one TTL cache with one refresh at a time; an empty value is refused at start-up.
+  A missing `aws`/`azure`/`gcp` extra now always names the `pip install`.
