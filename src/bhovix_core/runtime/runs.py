@@ -11,7 +11,8 @@ ALLOWED: dict[RunState, frozenset[RunState]] = {
     S.RECEIVED: frozenset({S.WORKING}),
     S.WORKING: frozenset({S.NO_ACTION, S.PLAN_READY, S.NEEDS_PERSON}),
     S.PLAN_READY: frozenset({S.DENIED, S.WAITING_FOR_APPROVAL, S.EXECUTING, S.NEEDS_PERSON}),
-    S.WAITING_FOR_APPROVAL: frozenset({S.EXECUTING, S.REJECTED, S.EXPIRED}),
+    # NEEDS_PERSON: the execute intent cannot be audited after approval (CUJ 5), so nothing runs.
+    S.WAITING_FOR_APPROVAL: frozenset({S.EXECUTING, S.REJECTED, S.EXPIRED, S.NEEDS_PERSON}),
     S.EXECUTING: frozenset({S.VERIFYING, S.NEEDS_PERSON}),
     S.VERIFYING: frozenset({S.SUCCEEDED, S.ROLLED_BACK, S.NEEDS_PERSON}),
 }

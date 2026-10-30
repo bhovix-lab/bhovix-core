@@ -17,6 +17,9 @@ dependencies = [
     "pyyaml==6.0.3",
 ]
 
+[project.scripts]
+bhovix-core = "bhovix_core.cli:main"
+
 [dependency-groups]
 dev = ["pytest==9.1.1", "ruff==0.17.1"]
 # Free scanners that keep working when the repository turns private.

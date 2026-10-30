@@ -19,3 +19,7 @@ build/
 .DS_Store
 .idea/
 .vscode/
+
+# Written by a shell run of the CLI against the fixture config; tests use tmp copies.
+tests/fixtures/config/qualified.json
+tests/fixtures/config/audit/

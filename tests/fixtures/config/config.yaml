@@ -16,6 +16,7 @@ recorded_dir: ../recorded
 golden_dir: ../golden
 inputs_dir: ../inputs
 detector_threshold: 0.5
+eval_threshold: 1.0
 check_modules:
   - tests.fixtures.checks
 systems:

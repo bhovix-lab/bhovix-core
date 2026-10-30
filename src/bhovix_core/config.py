@@ -77,6 +77,7 @@ class Config(_Strict):
     golden_dir: Path
     inputs_dir: Path
     detector_threshold: float = Field(ge=0.0, le=1.0)
+    eval_threshold: float = Field(default=1.0, ge=0.0, le=1.0)
     check_modules: list[str] = []
     systems: dict[str, System] = {}
     slack: SlackConfig | None = None
