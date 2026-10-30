@@ -36,7 +36,10 @@ def make(
     try:
         module = importlib.import_module(module_name)
     except ImportError as exc:
-        if entry.extra is None:
+        # Only a missing third-party package means "install the extra"; a broken Hadavin module (or an import
+        # error inside an installed package) keeps its own message.
+        missing = isinstance(exc, ModuleNotFoundError) and exc.name or ""
+        if entry.extra is None or not missing or missing.split(".")[0] == "hadavin_sdk":
             raise
         raise ConfigError(
             f"backend {capability} {settings.kind!r} needs: pip install hadavin-sdk[{entry.extra}]"

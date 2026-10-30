@@ -1,5 +1,7 @@
 """Slice 2 P1b: backend table, config v2, environment table, platform secrets, Deps."""
 
+from pathlib import Path
+
 import pytest
 import yaml
 
@@ -202,3 +204,56 @@ def test_missing_extra_names_the_install_command(monkeypatch):
     )
     with pytest.raises(ConfigError, match=r"pip install hadavin-sdk\[pg\]"):
         make("store", KindSettings(kind="nope"))
+
+
+# --- review fixes on #9 ----------------------------------------------------------------------------
+
+
+def test_config_error_never_echoes_a_mistyped_value(cfg_dir):
+    value = "s3cr" + "et-value-p1b"
+    _edit(
+        cfg_dir,
+        lambda d: d["backends"].update(audit={"kind": "local_dir", "dir": "a", "pasword": value}),
+    )
+    with pytest.raises(ConfigError) as err:
+        load_config(cfg_dir)
+    assert "pasword" in str(err.value) and value not in str(err.value)
+    _edit(
+        cfg_dir,
+        lambda d: (
+            d["backends"].update(audit={"kind": "local_dir", "dir": "a"}) or d.update(tokn=value)
+        ),
+    )
+    with pytest.raises(ConfigError) as err:
+        load_config(cfg_dir)
+    assert "tokn" in str(err.value) and value not in str(err.value)
+
+
+def test_broken_hadavin_module_keeps_its_own_import_error(monkeypatch):
+    monkeypatch.setitem(
+        TABLE["store"], "broken", Entry(KindSettings, "hadavin_sdk.not_a_module:make", "pg")
+    )
+    with pytest.raises(ModuleNotFoundError, match="hadavin_sdk.not_a_module"):
+        make("store", KindSettings(kind="broken"))
+
+
+def test_import_error_inside_an_installed_module_is_not_an_extra_hint(monkeypatch):
+    def boom(name):
+        raise ImportError("cannot import name 'x' from 'somepkg'", name="somepkg")
+
+    monkeypatch.setitem(TABLE["store"], "half", Entry(KindSettings, "somepkg:make", "pg"))
+    monkeypatch.setattr("importlib.import_module", boom)
+    with pytest.raises(ImportError, match="cannot import name"):
+        make("store", KindSettings(kind="half"))
+
+
+class _OptPath(KindSettings):
+    dir: Path | None = None
+
+
+def test_optional_path_settings_are_relative_to_the_config_folder(cfg_dir, monkeypatch):
+    from hadavin_sdk.config import _one
+
+    monkeypatch.setitem(TABLE["audit"], "opt", Entry(_OptPath, "m:f"))
+    assert _one("audit", {"kind": "opt", "dir": "x"}, cfg_dir).dir == cfg_dir / "x"
+    assert _one("audit", {"kind": "opt"}, cfg_dir).dir is None

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 from urllib.parse import urlsplit
 
 import yaml
@@ -31,7 +31,8 @@ Money = Annotated[Decimal, BeforeValidator(_money)]
 
 
 class _Strict(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # A mistyped key may hold a secret: errors name the field, never its value.
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
 
 class Route(_Strict):
@@ -90,7 +91,9 @@ def _one(cap: str, raw: Any, root: Path) -> KindSettings:
         name,
         field,
     ) in model.model_fields.items():  # relative paths are relative to the config folder
-        if field.annotation is Path and isinstance(data.get(name), str):
+        if Path in (field.annotation, *get_args(field.annotation)) and isinstance(
+            data.get(name), str
+        ):
             data[name] = root / data[name]
     try:
         return model(**data)

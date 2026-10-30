@@ -16,7 +16,8 @@ from pydantic import BaseModel, ConfigDict, Field
 class KindSettings(BaseModel):
     """One backend entry, ``{kind: <name>, …settings}``. A typo in a setting fails at start-up."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # A mistyped key may hold a secret: errors name the field, never its value.
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
     kind: str
 
 
