@@ -104,14 +104,19 @@ class PostgresSettings(KindSettings):
         False  # RDS IAM login: no database password anywhere (needs the `aws` extra too)
     )
     region: str | None = None
-    # None: `require` for any non-local host (and always with iam_auth); loopback and sockets keep the DSN's.
+    # None: `verify-full` for any non-local host; loopback and sockets keep the DSN's. Setting a weaker mode
+    # (`require`, `disable`) is an explicit opt-down for dev, refused with iam_auth.
     sslmode: SslMode | None = None
-    sslrootcert: str | None = None  # CA bundle path (the RDS bundle); required with iam_auth
+    # The server's CA bundle, cloud-neutral: a file path, or a PEM held in any secrets kind.
+    sslrootcert: str | None = None
+    sslrootcert_secret_name: str | None = None
 
     @model_validator(mode="after")
-    def _iam_needs_region(self) -> PostgresSettings:
+    def _checks(self) -> PostgresSettings:
         if self.iam_auth and not self.region:
             raise ValueError("iam_auth needs region (and pip install hadavin-sdk[aws])")
+        if self.sslrootcert and self.sslrootcert_secret_name:
+            raise ValueError("set sslrootcert or sslrootcert_secret_name, not both")
         return self
 
 

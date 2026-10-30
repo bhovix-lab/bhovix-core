@@ -121,14 +121,16 @@ def _migrate(cfg, runtime_role: str | None) -> int:
         print("refused: set HADAVIN_MIGRATE_DSN to the migration role's DSN", file=sys.stderr)
         return 2
     from hadavin_sdk.store.migrate import migrate
+    from hadavin_sdk.store.postgres import ca_file
 
+    ca = ca_file(store, make("secrets", cfg.backends.secrets).get)
     applied = migrate(
         dsn,
         runtime_role=runtime_role,
         iam_auth=store.iam_auth,
         region=store.region,
         sslmode=store.sslmode,
-        sslrootcert=store.sslrootcert,
+        sslrootcert=ca,
     )
     print(f"applied: {', '.join(applied) or 'nothing (up to date)'}")
     if applied and not runtime_role:

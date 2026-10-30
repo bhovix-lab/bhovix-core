@@ -27,34 +27,64 @@ PW = "pw" + "-p7"  # built from parts
 # --- TLS (no database) -------------------------------------------------------------------------------
 
 
+CA = "/etc/ssl/db-ca.pem"
+
+
 @pytest.mark.parametrize(
-    "dsn,setting,iam,want",
+    "dsn,setting,ca,want",
     [
-        (REMOTE, None, False, "require"),  # non-local host: TLS by default
-        ("postgresql://app@localhost/core", None, False, None),  # loopback keeps the DSN's choice
-        ("host=/var/run/postgresql dbname=core", None, False, None),  # unix socket
-        (
-            REMOTE + "?sslmode=verify-full",
-            None,
-            False,
-            "verify-full",
-        ),  # the DSN's stronger mode kept
-        (REMOTE, "disable", False, "disable"),  # an explicit setting wins (no iam)
-        ("postgresql://app@127.0.0.2/core", None, False, None),  # all of 127/8 is loopback
-        ("hostaddr=10.0.0.5 dbname=core", None, False, "require"),  # hostaddr counts as the host
+        (REMOTE, None, CA, "verify-full"),  # non-local host: the server is verified by default
+        ("postgresql://app@localhost/core", None, None, None),  # loopback keeps the DSN's choice
+        ("host=/var/run/postgresql dbname=core", None, None, None),  # unix socket
+        ("postgresql://app@127.0.0.2/core", None, None, None),  # all of 127/8 is loopback
+        (REMOTE + "?sslmode=verify-ca", None, CA, "verify-ca"),  # the DSN's mode is kept
+        (REMOTE, "require", None, "require"),  # explicit opt-down for dev (no iam)
+        (REMOTE, "disable", None, "disable"),
+        ("hostaddr=10.0.0.5 dbname=core", None, CA, "verify-full"),  # hostaddr counts as the host
     ],
 )
-def test_tls_mode(dsn, setting, iam, want):
-    assert tls_mode(dsn, iam_auth=iam, sslmode=setting) == want
+def test_tls_mode(dsn, setting, ca, want):
+    assert tls_mode(dsn, sslmode=setting, sslrootcert=ca) == want
+
+
+def test_a_verified_mode_needs_a_ca_bundle():
+    with pytest.raises(ConfigError, match="CA bundle"):
+        tls_mode(REMOTE)
+    with pytest.raises(ConfigError, match="CA bundle"):
+        tls_mode(REMOTE + "?sslmode=verify-full")
+    assert tls_mode(REMOTE + "?sslrootcert=/x.pem") == "verify-full"
 
 
 def test_pghost_counts_as_the_host(monkeypatch):
     monkeypatch.setenv("PGHOST", "db.example.internal")
-    assert tls_mode("dbname=core") == "require"
+    assert tls_mode("dbname=core", sslrootcert=CA) == "verify-full"
+
+
+def test_ca_bundle_from_the_secrets_backend(tmp_path):
+    from hadavin_sdk.store.postgres import ca_file
+
+    pem = "-----BEGIN " + "CERTIFICATE-----\nMIIfake\n-----END " + "CERTIFICATE-----\n"
+    settings = PostgresSettings(
+        kind="postgres",
+        dsn_secret_name="pg-dsn",  # noqa: S106 - a name
+        sslrootcert_secret_name="db-ca",  # noqa: S106 - a name
+    )
+    path = ca_file(settings, {"db-ca": pem}.__getitem__)
+    with open(path, encoding="utf-8") as f:
+        assert f.read() == pem
+    with_path = PostgresSettings(kind="postgres", dsn_secret_name="d", sslrootcert=CA)  # noqa: S106
+    assert ca_file(with_path, None) == CA
+    with pytest.raises(ValueError, match="not both"):
+        PostgresSettings(
+            kind="postgres",
+            dsn_secret_name="d",  # noqa: S106 - a name
+            sslrootcert=CA,
+            sslrootcert_secret_name="db-ca",  # noqa: S106 - a name
+        )
 
 
 def test_iam_verifies_the_server_by_default():
-    ca = "/etc/ssl/rds-bundle.pem"
+    ca = CA
     assert tls_mode(REMOTE, iam_auth=True, sslrootcert=ca) == "verify-full"
     assert (
         tls_mode("postgresql://app@localhost/core", iam_auth=True, sslrootcert=ca) == "verify-full"

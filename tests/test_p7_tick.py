@@ -500,3 +500,32 @@ def test_cli_migrate_warns_when_new_tables_get_no_grants(cfg_dir, monkeypatch, c
     )
     assert cli.main(["--config", str(cfg_dir), "migrate"]) == 0
     assert "--runtime-role" in capsys.readouterr().err
+
+
+def test_approver_prefix_is_the_channel_name():
+    class Other(SlackChannel):
+        name = "teams"
+
+    req_value = "apr-1|h|0|approve"
+    body = urlencode(
+        {"payload": json.dumps({"user": {"id": "U9"}, "actions": [{"value": req_value}]})}
+    )
+    body = body.encode()
+    ts = int(time.time())
+    sig = hmac.new(SIG.encode(), f"v0:{ts}:".encode() + body, hashlib.sha256).hexdigest()
+    headers = {"X-Slack-Request-Timestamp": str(ts), "X-Slack-Signature": "v0=" + sig}
+    d = Other("C0", TOKEN, SIG).parse_decision(headers, body, ts)
+    assert (d.approver_id, d.channel) == ("teams:U9", "teams")
+    assert Other("C0", TOKEN, SIG)._who("teams:U9") == "<@U9>"
+    assert Other("C0", TOKEN, SIG)._who("slack:U9") == "slack:U9"  # not this channel's user
+
+
+def test_slack_app_manifest_is_least_privilege():
+    import yaml
+
+    from tests.conftest import FIXTURES
+
+    manifest = yaml.safe_load((FIXTURES.parent.parent / "docs/slack-app-manifest.yaml").read_text())
+    assert manifest["oauth_config"]["scopes"] == {"bot": ["chat:write"]}
+    assert manifest["settings"]["interactivity"]["request_url"].endswith("/slack/actions")
+    assert manifest["settings"]["org_deploy_enabled"] is False

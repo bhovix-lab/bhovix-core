@@ -10,6 +10,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
+import tempfile
 import threading
 from datetime import date, datetime
 from decimal import Decimal
@@ -64,24 +65,37 @@ def _is_local(parts: dict) -> bool:
 def tls_mode(
     dsn: str, *, iam_auth: bool = False, sslmode: str | None = None, sslrootcert: str | None = None
 ) -> str | None:
-    """The sslmode to connect with: the setting, else the DSN's, else `require` for a non-local host.
-    With iam_auth a 15-minute bearer token is sent, so the server must be verified: `verify-full` by
-    default, `verify-ca` allowed, weaker refused, and a CA bundle (`sslrootcert`) required."""
+    """The sslmode to connect with. Loopback and unix sockets keep the setting or the DSN's. Any other host
+    defaults to `verify-full` (the server's certificate and name are checked, so credentials cannot be
+    captured by an impostor); an explicit weaker `sslmode` is an opt-down for dev. With iam_auth (a bearer
+    token) only `verify-full` or `verify-ca` is accepted. A verified mode needs the CA bundle."""
     parts = conninfo_to_dict(dsn)
     mode = sslmode or parts.get("sslmode")
-    if iam_auth:
-        mode = mode or "verify-full"
-        if mode not in _VERIFIED_TLS:
-            raise ConfigError(
-                "store postgres: iam_auth needs a verified server "
-                f"(sslmode verify-full or verify-ca), not {mode}"
-            )
-        if not (sslrootcert or parts.get("sslrootcert")):
-            raise ConfigError("store postgres: iam_auth needs sslrootcert (the database CA bundle)")
+    if not iam_auth and _is_local(parts):
         return mode
-    if mode:
-        return mode
-    return None if _is_local(parts) else "require"
+    mode = mode or "verify-full"
+    if iam_auth and mode not in _VERIFIED_TLS:
+        raise ConfigError(
+            "store postgres: iam_auth needs a verified server "
+            f"(sslmode verify-full or verify-ca), not {mode}"
+        )
+    if mode in _VERIFIED_TLS and not (sslrootcert or parts.get("sslrootcert")):
+        raise ConfigError(
+            f"store postgres: sslmode {mode} needs the server's CA bundle: set sslrootcert (a file) or "
+            "sslrootcert_secret_name (a PEM in the secrets backend), or opt down with sslmode for dev"
+        )
+    return mode
+
+
+def ca_file(settings, resolve) -> str | None:
+    """The CA bundle path: the setting, or the PEM from the secrets backend written to a private temp file
+    (a CA bundle is public; the file is 0600 only because mkstemp makes it so)."""
+    if not settings.sslrootcert_secret_name:
+        return settings.sslrootcert
+    fd, path = tempfile.mkstemp(prefix="hadavin-ca-", suffix=".pem")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(resolve(settings.sslrootcert_secret_name))
+    return path
 
 
 def connect(
@@ -134,7 +148,7 @@ def build(settings, deps) -> PostgresStore:
             iam_auth=settings.iam_auth,
             region=settings.region,
             sslmode=settings.sslmode,
-            sslrootcert=settings.sslrootcert,
+            sslrootcert=ca_file(settings, deps.resolve),
         )
     except psycopg.OperationalError as exc:
         # The class only: driver messages can carry the host and user.

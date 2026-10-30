@@ -29,11 +29,11 @@ def handle_slack_action(
     try:
         _, reason = approvals.receive(headers, body, record_only=True)
     except NotFound:  # signed, but for an approval this deployment does not have
-        _LOG.warning("slack action for an unknown approval")
+        _LOG.warning("channel action for an unknown approval")
         return 200, b""
     if reason == "bad_signature":
         return 401, b""
-    _LOG.info("slack action: %s", reason)
+    _LOG.info("channel action: %s", reason)
     return 200, b""
 
 

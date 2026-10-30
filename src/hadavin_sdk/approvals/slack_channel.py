@@ -1,5 +1,9 @@
 """Slack approval channel: `chat.postMessage` with Approve / Reject buttons, `chat.update` when decided.
 
+Each client runs its OWN internal Slack app, created in its workspace from `docs/slack-app-manifest.yaml`
+(scope `chat:write` only); the tokens stay in the client's secrets backend. Hadavin never ships one shared,
+distributed app (Slack rate-limits non-Marketplace distributed apps far more tightly; see docs/slack-app.md).
+
 Stdlib HTTP only, no redirects. Text a person acts on is template-built and `clean()`ed, sent as plain_text so
 Slack renders no markdown, links or mentions from it. Clicks come back through the receiver (`receiver.py`),
 verified with the signing secret (`slack.parse_decision`); the approver is the verified Slack user.
@@ -21,11 +25,6 @@ API = "https://slack.com/api"
 
 class SlackError(RuntimeError):
     """Slack answered `ok: false`; the message is Slack's error code only (never the request)."""
-
-
-def _who(approver_id: str) -> str:
-    kind, _, ident = approver_id.partition(":")
-    return f"<@{ident}>" if kind == "slack" and ident.isalnum() else approver_id
 
 
 class SlackChannel:
@@ -55,8 +54,12 @@ class SlackChannel:
             raise SlackError(f"{method}: {code}")
         return reply
 
-    @staticmethod
-    def _blocks(req: ApprovalRequest, approver_ids: list[str] | None) -> list[dict[str, Any]]:
+    def _who(self, approver_id: str) -> str:
+        """A mention for this channel's own users (`<name>:<id>`); any other principal id as written."""
+        kind, _, ident = approver_id.partition(":")
+        return f"<@{ident}>" if kind == self.name and ident.isalnum() else approver_id
+
+    def _blocks(self, req: ApprovalRequest, approver_ids: list[str] | None) -> list[dict[str, Any]]:
         step = f"Step {req.current_step + 1} of {len(req.steps)}"
         blocks: list[dict[str, Any]] = [
             {"type": "section", "text": {"type": "plain_text", "text": clean(req.summary)[:2900]}},
@@ -66,7 +69,7 @@ class SlackChannel:
                 {"type": "context", "elements": [{"type": "plain_text", "text": f"{req.status}."}]}
             )
             return blocks
-        who = ", ".join(_who(a) for a in approver_ids)
+        who = ", ".join(self._who(a) for a in approver_ids)
         blocks.append(
             {
                 "type": "context",
@@ -128,13 +131,13 @@ class SlackChannel:
     def notify(self, principal_id: str, text: str) -> None:
         self._call(
             "chat.postMessage",
-            {"channel": self.channel_id, "text": f"{_who(principal_id)}: {clean(text)}"},
+            {"channel": self.channel_id, "text": f"{self._who(principal_id)}: {clean(text)}"},
         )
 
     def parse_decision(
         self, headers: Mapping[str, str], body: bytes, now_ts: float
     ) -> ApprovalDecision | None:
-        return slack.parse_decision(headers, body, now_ts, self._secret)
+        return slack.parse_decision(headers, body, now_ts, self._secret, self.name)
 
 
 def build(settings, deps) -> SlackChannel:

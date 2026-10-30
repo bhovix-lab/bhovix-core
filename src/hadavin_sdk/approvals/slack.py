@@ -34,12 +34,16 @@ def verify(headers: Mapping[str, str], body: bytes, now_ts: float, signing_secre
 
 
 def parse_decision(
-    headers: Mapping[str, str], body: bytes, now_ts: float, signing_secret: str
+    headers: Mapping[str, str],
+    body: bytes,
+    now_ts: float,
+    signing_secret: str,
+    channel: str = "slack",
 ) -> ApprovalDecision | None:
     """A Slack interactive payload -> ApprovalDecision, or None if the signature does not verify.
 
     The button value carries ``approval_id|plan_hash|step|approve|reject``; the approver is the verified Slack
-    user id (``slack:<id>``), which principals.yaml maps to people.
+    user id as ``<channel>:<id>`` (the calling channel's name), which principals.yaml maps to people.
     """
     if not verify(headers, body, now_ts, signing_secret):
         return None
@@ -52,8 +56,8 @@ def parse_decision(
             plan_hash=plan_hash,
             step=int(step),
             decision=decision,
-            approver_id=f"slack:{payload['user']['id']}",
-            channel="slack",
+            approver_id=f"{channel}:{payload['user']['id']}",
+            channel=channel,
         )
     except (KeyError, IndexError, ValueError, TypeError):
         return None
