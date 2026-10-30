@@ -1,0 +1,33 @@
+# Hadavin approvals: Slack app manifest. Each client creates its OWN internal app from this file in its own
+# workspace (api.slack.com/apps -> Create New App -> From a manifest). Never distribute one shared app.
+#
+# Before creating:
+#   1. Replace the request_url host with the client's receiver host (HTTPS, POST /slack/actions).
+#   2. Keep the scopes exactly as listed: chat:write is all the approval channel uses.
+# After creating:
+#   3. Install the app to the workspace; invite it to the approvals channel (/invite @Hadavin Approvals).
+#   4. Put the Bot User OAuth Token and the Signing Secret in the client's secrets backend, under the
+#      names the config's backends.channel uses (bot_token_secret_name, signing_secret_name).
+#   5. backends.channel.channel_id is the channel's ID (C... or G...), not its name.
+_metadata:
+  major_version: 2
+  minor_version: 1
+display_information:
+  name: Hadavin Approvals
+  description: Approve or reject the actions your Hadavin agents propose.
+  background_color: "#1f3b4d"
+features:
+  bot_user:
+    display_name: Hadavin Approvals
+    always_online: false
+oauth_config:
+  scopes:
+    bot:
+      - chat:write
+settings:
+  interactivity:
+    is_enabled: true
+    request_url: https://receiver.example.com/slack/actions
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

@@ -7,6 +7,10 @@ the DSN, the login is a 15-minute RDS IAM token and TLS is required.
 
 from __future__ import annotations
 
+import ipaddress
+import logging
+import os
+import tempfile
 import threading
 from collections.abc import Callable
 from datetime import date, datetime
@@ -16,6 +20,7 @@ from typing import Any
 
 import psycopg
 from psycopg import sql
+from psycopg.conninfo import conninfo_to_dict
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel
@@ -31,16 +36,75 @@ from hadavin_sdk.models import (
     Plan,
     Run,
     RunState,
+    TickState,
     now,
 )
-from hadavin_sdk.store.protocol import NotFound, StaleState
+from hadavin_sdk.store.protocol import NotFound, StaleState, StoreUnavailable
+
+_LOG = logging.getLogger("hadavin_sdk.store")
+
+
+_VERIFIED_TLS = frozenset({"verify-ca", "verify-full"})
+
+
+def _is_local(parts: dict) -> bool:
+    """Unix socket or loopback only. A host from PGHOST/hostaddr counts; anything unknown is remote."""
+    hosts = str(parts.get("host") or parts.get("hostaddr") or os.environ.get("PGHOST") or "")
+    if not hosts or hosts.startswith("/"):
+        return True
+    for h in hosts.split(","):
+        if h == "localhost":
+            continue
+        try:
+            if not ipaddress.ip_address(h).is_loopback:
+                return False
+        except ValueError:
+            return False
+    return True
+
+
+def tls_mode(
+    dsn: str, *, iam_auth: bool = False, sslmode: str | None = None, sslrootcert: str | None = None
+) -> str | None:
+    """The sslmode to connect with. Loopback and unix sockets keep the setting or the DSN's. Any other host
+    defaults to `verify-full` (the server's certificate and name are checked, so credentials cannot be
+    captured by an impostor); an explicit weaker `sslmode` is an opt-down for dev. With iam_auth (a bearer
+    token) only `verify-full` or `verify-ca` is accepted. A verified mode needs the CA bundle."""
+    parts = conninfo_to_dict(dsn)
+    mode = sslmode or parts.get("sslmode")
+    if not iam_auth and _is_local(parts):
+        return mode
+    mode = mode or "verify-full"
+    if iam_auth and mode not in _VERIFIED_TLS:
+        raise ConfigError(
+            "store postgres: iam_auth needs a verified server "
+            f"(sslmode verify-full or verify-ca), not {mode}"
+        )
+    if mode in _VERIFIED_TLS and not (sslrootcert or parts.get("sslrootcert")):
+        raise ConfigError(
+            f"store postgres: sslmode {mode} needs the server's CA bundle: set sslrootcert (a file) or "
+            "sslrootcert_secret_name (a PEM in the secrets backend), or opt down with sslmode for dev"
+        )
+    return mode
+
+
+def ca_file(settings, resolve) -> str | None:
+    """The CA bundle path: the setting, or the PEM from the secrets backend written to a private temp file
+    (a CA bundle is public; the file is 0600 only because mkstemp makes it so)."""
+    if not settings.sslrootcert_secret_name:
+        return settings.sslrootcert
+    fd, path = tempfile.mkstemp(prefix="hadavin-ca-", suffix=".pem")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(resolve(settings.sslrootcert_secret_name))
+    return path
+
 
 PasswordSource = Callable[[str, int, str], str]  # (host, port, user) -> a short-lived password
 
 
 def password_source(iam_auth: bool, region: str | None) -> PasswordSource | None:
-    """The sign-in helper for the settings: None (the DSN's own password), or RDS IAM (`store/auth_aws.py`,
-    the only module of the store that imports an AWS SDK)."""
+    """The sign-in helper: None (the DSN's own password), or RDS IAM from `store/auth_aws.py`, the only
+    module of the store that imports an AWS SDK (lock-in audit 2026-10-31 #5)."""
     if not iam_auth:
         return None
     try:
@@ -54,15 +118,27 @@ def password_source(iam_auth: bool, region: str | None) -> PasswordSource | None
     return auth_aws.rds_iam(region)
 
 
-def connect(dsn: str, *, password: PasswordSource | None = None) -> psycopg.Connection:
+def connect(
+    dsn: str,
+    *,
+    iam_auth: bool = False,
+    region: str | None = None,
+    sslmode: str | None = None,
+    sslrootcert: str | None = None,
+) -> psycopg.Connection:
     extra: dict[str, Any] = {}
-    if password is not None:
-        from psycopg.conninfo import conninfo_to_dict
-
+    if mode := tls_mode(dsn, iam_auth=iam_auth, sslmode=sslmode, sslrootcert=sslrootcert):
+        extra["sslmode"] = mode
+    if sslrootcert:
+        extra["sslrootcert"] = sslrootcert
+    if iam_auth:
         parts = conninfo_to_dict(dsn)
+        # The migration role may log in with a password; the runtime never (refused in build()).
         if not parts.get("password"):
-            token = password(parts["host"], int(parts.get("port") or 5432), parts["user"])
-            extra = {"password": token, "sslmode": "require"}
+            password = password_source(True, region)
+            extra["password"] = password(
+                parts["host"], int(parts.get("port") or 5432), parts["user"]
+            )
     conn = psycopg.connect(dsn, autocommit=True, connect_timeout=10, **extra)
     # Plan hashes include created_at: datetimes must come back in UTC whatever the server's TimeZone is.
     conn.execute("SET TIME ZONE 'UTC'")
@@ -71,13 +147,27 @@ def connect(dsn: str, *, password: PasswordSource | None = None) -> psycopg.Conn
 
 def build(settings, deps) -> PostgresStore:
     """Table factory: the DSN is a platform secret named in the settings (never the executor's)."""
-    password = password_source(settings.iam_auth, settings.region)
+    password_source(
+        settings.iam_auth, settings.region
+    )  # a missing `aws` extra fails here, with the hint
     dsn = deps.resolve(settings.dsn_secret_name)
+    if settings.iam_auth and conninfo_to_dict(dsn).get("password"):
+        raise ConfigError(
+            "store postgres: with iam_auth the DSN must not carry a password (the login is an IAM token)"
+        )
     try:
-        conn = connect(dsn, password=password)
+        conn = connect(
+            dsn,
+            iam_auth=settings.iam_auth,
+            region=settings.region,
+            sslmode=settings.sslmode,
+            sslrootcert=ca_file(settings, deps.resolve),
+        )
     except psycopg.OperationalError as exc:
         # The class only: driver messages can carry the host and user.
-        raise ConfigError(f"store postgres: cannot connect ({exc.__class__.__name__})") from None
+        raise StoreUnavailable(
+            f"store postgres: cannot connect ({exc.__class__.__name__})"
+        ) from None
     return PostgresStore(conn)
 
 
@@ -203,7 +293,10 @@ class PostgresStore:
         return self._one(Plan, "plans", "run_id", run_id)
 
     def save_gate_decision(self, decision: GateDecision) -> None:
-        self._insert("gate_decisions", decision, upsert_on="run_id")
+        try:
+            self._insert("gate_decisions", decision)  # append-only: the runtime role has no UPDATE
+        except psycopg.errors.UniqueViolation:
+            raise StaleState(f"gate decision exists: {decision.run_id}") from None
 
     def get_gate_decision(self, run_id: str) -> GateDecision:
         return self._one(GateDecision, "gate_decisions", "run_id", run_id)
@@ -237,6 +330,44 @@ class PostgresStore:
                 f"{req.approval_id}: not {expected_status}/{expected_step}",
             )
 
+    def record_decision(
+        self,
+        decision: ApprovalDecision,
+        req: ApprovalRequest,
+        expected_status: str,
+        expected_step: int,
+    ) -> None:
+        drow, rrow = _row(decision), _row(req)
+        insert = sql.SQL("INSERT INTO approval_decisions ({}) VALUES ({})").format(
+            sql.SQL(", ").join(sql.Identifier(c) for c in drow),
+            sql.SQL(", ").join(sql.Placeholder() * len(drow)),
+        )
+        update = sql.SQL(
+            "UPDATE approval_requests SET {} WHERE approval_id = %s AND status = %s AND current_step = %s"
+        ).format(
+            sql.SQL(", ").join(
+                sql.SQL("{} = %s").format(sql.Identifier(c)) for c in rrow if c != "approval_id"
+            )
+        )
+        values = [v for c, v in rrow.items() if c != "approval_id"]
+        lost = False
+        try:
+            with self._lock, self._db.transaction():
+                self._exec(insert, list(drow.values()))
+                cur = self._exec(update, [*values, req.approval_id, expected_status, expected_step])
+                if cur.rowcount == 0:
+                    lost = True
+                    raise psycopg.Rollback()  # the insert above is undone with it
+        except psycopg.errors.UniqueViolation:
+            lost = True
+        if lost:
+            raise self._missing_or_stale(
+                "approval_requests",
+                "approval_id",
+                req.approval_id,
+                f"{req.approval_id}: not {expected_status}/{expected_step}",
+            )
+
     def list_due_approvals(self, now: datetime) -> list[ApprovalRequest]:
         return self._select(
             ApprovalRequest,
@@ -246,7 +377,10 @@ class PostgresStore:
         )
 
     def save_approval_decision(self, decision: ApprovalDecision) -> None:
-        self._insert("approval_decisions", decision)
+        try:
+            self._insert("approval_decisions", decision)
+        except psycopg.errors.UniqueViolation:
+            raise StaleState(f"decision exists: {decision.approval_id}/{decision.step}") from None
 
     def get_approval_decision(self, approval_id: str) -> ApprovalDecision | None:
         found = self._select(
@@ -275,16 +409,21 @@ class PostgresStore:
     def list_dead_letters(self, run_id: str) -> list[DeadLetter]:
         return self._select(DeadLetter, "dead_letters", "run_id = %s", (run_id,), " ORDER BY seq")
 
-    _MONTH = "SELECT COALESCE(SUM(usd), 0) AS m FROM spend WHERE agent_id = %s AND date_trunc('month', day) = date_trunc('month', %s::date)"
-
     def add_spend(self, agent_id: str, day: date, usd: Decimal) -> tuple[Decimal, Decimal]:
+        """Day and month counters, each one atomic upsert, in one transaction: exact under concurrency."""
+        month = day.replace(day=1)
         with self._lock, self._db.transaction():
             d = self._exec(
                 "INSERT INTO spend (agent_id, day, usd) VALUES (%s, %s, %s) "
                 "ON CONFLICT (agent_id, day) DO UPDATE SET usd = spend.usd + EXCLUDED.usd RETURNING usd",
                 (agent_id, day, usd),
             ).fetchone()["usd"]
-            m = self._exec(self._MONTH, (agent_id, day)).fetchone()["m"]
+            m = self._exec(
+                "INSERT INTO spend_month (agent_id, month, usd) VALUES (%s, %s, %s) "
+                "ON CONFLICT (agent_id, month) DO UPDATE SET usd = spend_month.usd + EXCLUDED.usd "
+                "RETURNING usd",
+                (agent_id, month, usd),
+            ).fetchone()["usd"]
         return Decimal(d), Decimal(m)
 
     def spend_totals(self, agent_id: str, day: date) -> tuple[Decimal, Decimal]:
@@ -292,12 +431,20 @@ class PostgresStore:
             d = self._exec(
                 "SELECT usd FROM spend WHERE agent_id = %s AND day = %s", (agent_id, day)
             ).fetchone()
-            m = self._exec(self._MONTH, (agent_id, day)).fetchone()["m"]
-        return (Decimal(d["usd"]) if d else Decimal(0)), Decimal(m)
+            m = self._exec(
+                "SELECT usd FROM spend_month WHERE agent_id = %s AND month = %s",
+                (agent_id, day.replace(day=1)),
+            ).fetchone()
+        return (Decimal(d["usd"]) if d else Decimal(0)), (Decimal(m["usd"]) if m else Decimal(0))
 
     def get_kill_switch(self) -> KillSwitch:
         found = self._select(KillSwitch, "kill_switch", "id = 1", ())
-        return found[0] if found else KillSwitch()
+        if not found:  # migrate seeds the row: its absence means a broken schema, so fail closed
+            _LOG.error(
+                "kill_switch row missing: treating the kill switch as ON; run hadavin-sdk migrate"
+            )
+            return KillSwitch(on=True, by="system:kill_switch_row_missing")
+        return found[0]
 
     def set_kill_switch(self, ks: KillSwitch) -> None:
         row = {"id": 1, **_row(ks)}
@@ -311,3 +458,10 @@ class PostgresStore:
         )
         with self._lock:
             self._exec(query, list(row.values()))
+
+    def get_tick_state(self, step: str) -> TickState | None:
+        found = self._select(TickState, "tick_state", "step = %s", (step,))
+        return found[0] if found else None
+
+    def save_tick_state(self, state: TickState) -> None:
+        self._insert("tick_state", state, upsert_on="step")

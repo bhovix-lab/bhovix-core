@@ -13,7 +13,6 @@ import yaml
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from hadavin_sdk import cli
 from hadavin_sdk.actions.secrets import FakeSecretProvider
 from hadavin_sdk.audit import anchor_azure, anchor_gcs, chain, signer_azure
 from hadavin_sdk.audit.anchor_azure import AzureBlobAnchor
@@ -286,44 +285,34 @@ def test_rds_iam_without_the_aws_extra_names_the_pip_install(monkeypatch):
         postgres.password_source(True, "region-x")
 
 
-def test_migrate_and_its_cli_pass_the_iam_helper_to_connect(tmp_path, monkeypatch, capsys):
-    from hadavin_sdk.store import migrate as migrate_mod
-
+def test_connect_signs_in_through_the_iam_helper_for_store_and_migrate(monkeypatch, tmp_path):
+    """Every caller (the store's build, `migrate`, the CLI's migrate) goes through `postgres.connect`, which
+    asks the helper for the token: no caller imports boto3."""
     seen = {}
 
     class Stop(Exception):
         pass
 
-    def connect(dsn, *, password=None):
-        seen["password"] = password
+    def fake_connect(dsn, **kw):
+        seen.update(kw)
         raise Stop
 
-    monkeypatch.setattr(migrate_mod, "connect", connect)
-    helper = lambda h, p, u: "t"
-    with pytest.raises(Stop):
-        migrate_mod.migrate("postgresql://unused", password=helper)
-    assert seen["password"] is helper
-    calls = {}
+    monkeypatch.setattr(postgres.psycopg, "connect", fake_connect)
     monkeypatch.setattr(
-        postgres,
-        "password_source",
-        lambda iam, region: calls.update(iam=iam, region=region) or helper,
+        postgres, "password_source", lambda iam, region: lambda h, p, u: f"tok:{region}:{u}"
     )
-    monkeypatch.setattr(migrate_mod, "migrate", lambda dsn, **kw: calls.update(kw) or [])
-    cfg_dir = make_cfg(tmp_path)
-    path = cfg_dir / "config.yaml"
-    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    raw["backends"]["store"] = {
-        "kind": "postgres",
-        "dsn_secret_name": "pg-dsn",
-        "iam_auth": True,
-        "region": "region-x",
-    }
-    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
-    monkeypatch.setenv("HADAVIN_CONFIG_DIR", str(cfg_dir))
-    monkeypatch.setenv("HADAVIN_MIGRATE_DSN", "postgresql://" + "migrator@db/core")
-    assert cli.main(["--config", str(cfg_dir), "migrate"]) == 0
-    assert calls == {"iam": True, "region": "region-x", "runtime_role": None, "password": helper}
+    dsn = "postgresql://" + "rt@db.example:5432/core"
+    ca = tmp_path / "ca.pem"  # a verified server: iam_auth refuses anything weaker
+    ca.write_text("unused", encoding="utf-8")
+    with pytest.raises(Stop):
+        postgres.connect(dsn, iam_auth=True, region="region-x", sslrootcert=str(ca))
+    assert seen["password"] == "tok:region-x:rt"  # noqa: S105 - the fake helper's output
+    from hadavin_sdk.store import migrate as migrate_mod
+
+    seen.clear()
+    with pytest.raises(Stop):
+        migrate_mod.migrate(dsn, iam_auth=True, region="region-x", sslrootcert=str(ca))
+    assert seen["password"] == "tok:region-x:rt"  # noqa: S105 - the fake helper's output
 
 
 # --- vendor SDKs only in their kind modules (audit §3a, for the modules this PR touched) ------------------
