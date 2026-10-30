@@ -21,6 +21,7 @@ from hadavin_sdk.llm.common import (
     post_json,
     reply,
     schema_hint,
+    stop_reason,
 )
 from hadavin_sdk.models import Reply, ToolCall
 
@@ -96,7 +97,9 @@ class OpenAICompatLLM(NetworkLLM):
                 lambda: self._parse(post_json(self.url, body, self._headers(), self.timeout_s))
             )
             used = [used[0] + (got.tokens[0] or 0), used[1] + (got.tokens[1] or 0)]
-            if not forced or any(c.name == forced for c in got.calls):
+            # Done when answered, or when asking again would end the same way (cut off, refused).
+            done = stop_reason(got.stop, got.calls) in ("max_tokens", "refusal")
+            if done or not forced or any(c.name == forced for c in got.calls):
                 break
             if (found := json_in_text(got.text)) is not None:
                 got.calls = [ToolCall(name=forced, input=found)]

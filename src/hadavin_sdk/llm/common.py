@@ -13,6 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
+from urllib.parse import urlsplit
 
 from hadavin_sdk.errors import ConfigError
 from hadavin_sdk.llm.retry import with_retry
@@ -228,6 +229,9 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 _OPENER = urllib.request.build_opener(_NoRedirect)
+# A loopback model is reached directly: an HTTP_PROXY would otherwise carry the plain-http prompt off the machine.
+_LOCAL_OPENER = urllib.request.build_opener(_NoRedirect, urllib.request.ProxyHandler({}))
+_LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
 def post_json(url: str, body: dict[str, Any], headers: dict[str, str], timeout_s: float) -> Any:
@@ -238,5 +242,6 @@ def post_json(url: str, body: dict[str, Any], headers: dict[str, str], timeout_s
         headers={"Content-Type": "application/json", **headers},
         method="POST",
     )
-    with _OPENER.open(req, timeout=timeout_s) as resp:  # nosec B310
+    opener = _LOCAL_OPENER if urlsplit(url).hostname in _LOOPBACK else _OPENER
+    with opener.open(req, timeout=timeout_s) as resp:  # nosec B310
         return json.loads(resp.read())
