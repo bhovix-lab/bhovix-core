@@ -34,8 +34,11 @@ def upper_error_bound(x: int, n: int, confidence: float = 0.95) -> float | None:
         return 1.0
     alpha = 1 - confidence
 
-    def cdf(p: float) -> float:
-        return sum(math.comb(n, i) * p**i * (1 - p) ** (n - i) for i in range(x + 1))
+    def cdf(p: float) -> float:  # in log space: comb(n, i) overflows a float above n of about 1030
+        return sum(
+            math.exp(math.log(math.comb(n, i)) + i * math.log(p) + (n - i) * math.log1p(-p))
+            for i in range(x + 1)
+        )
 
     lo, hi = 0.0, 1.0
     for _ in range(60):  # 2**-60: far below any reported precision

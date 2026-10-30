@@ -30,13 +30,20 @@ def _num(x: float | None, places: int = 2) -> str:
     return "-" if x is None else f"{x:.{places}f}"
 
 
+def _positive(text: str) -> int:
+    k = int(text)
+    if k < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return k
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="hadavin-sdk")
     p.add_argument("--config", help="client config folder (overrides HADAVIN_CONFIG_DIR)")
     sub = p.add_subparsers(dest="cmd", required=True)
     g = sub.add_parser("gate", help="run an agent's golden set")
     g.add_argument("agent")
-    g.add_argument("--k", type=int, default=1, help="runs per golden item (pass^k)")
+    g.add_argument("--k", type=_positive, default=1, help="runs per golden item (pass^k)")
     lim = sub.add_parser("limits", help="kill switch")
     lim.add_argument("action", choices=["stop", "reset"])
     lim.add_argument("--by", required=True)

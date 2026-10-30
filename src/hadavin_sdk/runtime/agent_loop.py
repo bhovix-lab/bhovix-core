@@ -61,12 +61,13 @@ def qualified_runs(registry: Registry) -> list[GateRun]:
     if not path.exists():
         return []
     runs = []
-    for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    # Bytes per line: a torn append can cut a UTF-8 character, which must skip that line, not the file.
+    for i, line in enumerate(path.read_bytes().splitlines(), 1):
         if not line.strip():
             continue
         try:
             data = json.loads(line)
-        except ValueError:
+        except ValueError:  # JSONDecodeError and UnicodeDecodeError
             # A torn line (disk full mid-append) qualifies nothing, and never blocks the valid lines.
             _LOG.warning("qualified.jsonl line %d is not valid JSON (torn append): skipped", i)
             continue

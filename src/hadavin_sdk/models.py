@@ -197,24 +197,23 @@ class GateRun(Shape):
     config_hash: str
     golden_sha256: str
     n: int
-    passed: int
-    pass_rate: float
+    passed: int  # items that passed (k == 1) or passed all k runs (k > 1)
+    pass_rate: float  # pass@1: passing (item, run) pairs / (n * k)
     threshold: float
     green: bool
     ts: datetime = Field(default_factory=now)
     # K1a: defaults keep lines written before pass^k parseable.
     k: int = 1
-    pass_k: float | None = None  # share of items passing all k runs; None when k == 1
-    abstain_rate: float | None = (
-        None  # (item, run) pairs with no proposal / (n * k), traps included
-    )
-    cost_per_task_usd: Decimal | None = (
-        None  # Decimal, not Money: models.py must not import config.py
-    )
-    baseline_pass_rate: float | None = None  # set by the replay check (K1b)
-    upper_error_bound: float | None = (
-        None  # one-sided 95 % Clopper-Pearson bound on the failure rate
-    )
+    # Share of items passing all k runs; None when k == 1.
+    pass_k: float | None = None
+    # (item, run) pairs with no proposal / (n * k), traps included.
+    abstain_rate: float | None = None
+    # Decimal, not Money: models.py must not import config.py.
+    cost_per_task_usd: Decimal | None = None
+    # Set by the replay check (K1b).
+    baseline_pass_rate: float | None = None
+    # One-sided 95 % Clopper-Pearson upper bound on the failure rate.
+    upper_error_bound: float | None = None
 
 
 class ToolCall(BaseModel):

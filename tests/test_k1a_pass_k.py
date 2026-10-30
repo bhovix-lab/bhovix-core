@@ -98,6 +98,11 @@ def test_bound_values_and_empty_set(cfg_dir):
     assert evals.upper_error_bound(0, 30) == pytest.approx(0.0950, abs=0.001)
     assert evals.upper_error_bound(1, 30) == pytest.approx(0.1487, abs=0.001)
     assert evals.upper_error_bound(0, 0) is None
+    assert evals.upper_error_bound(3, 3) == 1.0
+    assert evals.upper_error_bound(0, 300) == pytest.approx(1 - 0.05 ** (1 / 300), abs=1e-6)
+    assert 0.0 < evals.upper_error_bound(600, 1200) < 1.0  # no float overflow on a large set
+    with pytest.raises(ValueError, match="outside"):
+        evals.upper_error_bound(4, 3)
     run = evals.gate(_registry(cfg_dir, []), ScriptedLLM({}), "test-agent", k=3)
     assert not run.green
     assert (run.upper_error_bound, run.cost_per_task_usd, run.abstain_rate, run.pass_k) == (
@@ -108,6 +113,8 @@ def test_bound_values_and_empty_set(cfg_dir):
 def test_k_below_one_refused(cfg_dir):
     with pytest.raises(ConfigError, match="at least 1"):
         evals.gate(_registry(cfg_dir, []), ScriptedLLM({}), "test-agent", k=0)
+    with pytest.raises(SystemExit):  # argparse usage error, not a traceback
+        cli.main(["--config", str(cfg_dir), "gate", "test-agent", "--k", "0"])
 
 
 def _old_line() -> str:
@@ -130,8 +137,9 @@ def _old_line() -> str:
 
 def test_old_lines_parse_and_torn_line_warns(cfg_dir, caplog):
     reg = load_registry(load_config(cfg_dir))
-    (reg.config.root / "qualified.jsonl").write_text(
-        _old_line() + '\n{"agent_id": "te', encoding="utf-8"
+    torn = '{"agent_id": "t' + chr(0xE9)  # the tail cuts a two-byte UTF-8 character in half
+    (reg.config.root / "qualified.jsonl").write_bytes(
+        (_old_line() + "\n" + torn).encode("utf-8")[:-1]
     )
     with caplog.at_level(logging.WARNING, logger="hadavin_sdk.runtime"):
         [run] = qualified_runs(reg)
