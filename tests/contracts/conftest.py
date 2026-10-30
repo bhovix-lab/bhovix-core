@@ -46,6 +46,14 @@ def llm_and_call(request, tmp_path):
     return KINDS["llm"][request.param](tmp_path)
 
 
+@_kinds("llm_wire")
+def wire(request, tmp_path):
+    """A network llm kind against its fixtures (P5; `fake` has no network, so it is not one)."""
+    harness = KINDS["llm_wire"][request.param](tmp_path)
+    yield harness
+    harness.close()
+
+
 @_kinds("detector")
 def detector(request, tmp_path):
     return KINDS["detector"][request.param](tmp_path)

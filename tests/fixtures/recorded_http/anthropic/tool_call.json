@@ -1,0 +1,30 @@
+{
+  "request_match": {
+    "method": "POST"
+  },
+  "status": 200,
+  "headers": {},
+  "body": {
+    "id": "msg_contract_1",
+    "type": "message",
+    "role": "assistant",
+    "model": "contract-model",
+    "content": [
+      {
+        "type": "tool_use",
+        "id": "toolu_contract_1",
+        "name": "create_draft_record",
+        "input": {
+          "amount": "249.00",
+          "title": "Standing desk"
+        }
+      }
+    ],
+    "stop_reason": "tool_use",
+    "stop_sequence": null,
+    "usage": {
+      "input_tokens": 1200,
+      "output_tokens": 40
+    }
+  }
+}
