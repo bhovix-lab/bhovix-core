@@ -64,7 +64,7 @@ def test_ollama_needs_no_real_key():
     settings = OpenAICompatSettings(kind="openai_compat", base_url="http://localhost:11434/v1")
     llm = make("llm", settings, routes=ROUTES)
     assert llm.url == "http://localhost:11434/v1/chat/completions"
-    assert llm._headers == {}
+    assert llm._headers() == {}
 
 
 def test_openai_without_key_or_base_url_fails_clearly():
@@ -121,7 +121,7 @@ def test_a_custom_host_uses_its_own_key_variable():
         api_key_secret_name="k",  # noqa: S106 - a name
     )
     llm = make("llm", settings, FakeSecretProvider({"k": KEY}), routes=ROUTES)
-    assert llm._headers == {"Authorization": f"Bearer {KEY}"}
+    assert llm._headers() == {"Authorization": f"Bearer {KEY}"}
 
 
 def test_a_redirect_never_carries_the_key():

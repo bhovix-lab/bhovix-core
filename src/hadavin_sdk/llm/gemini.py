@@ -2,7 +2,8 @@
 
 The base URL is fixed here, never read from the environment: the Google SDK reads GOOGLE_GEMINI_BASE_URL and
 the Vertex switches itself, and the key went wherever they named (WARDEN reviews, 2026-09-30). The key travels in
-the ``x-goog-api-key`` header, never the URL. ``output_schema`` is forced through function calling mode ``ANY``.
+the ``x-goog-api-key`` header, never the URL, and is read on every call (a rotated key is picked up).
+``output_schema`` is forced through function calling mode ``ANY``.
 """
 
 from __future__ import annotations
@@ -13,8 +14,7 @@ from collections.abc import Callable
 from typing import Any
 from urllib.parse import quote
 
-from hadavin_sdk.llm.common import pinned, post_json, reply, tools_for, turns
-from hadavin_sdk.llm.retry import with_retry
+from hadavin_sdk.llm.common import Answer, NetworkLLM, pinned, post_json, reply
 from hadavin_sdk.models import Reply, ToolCall
 
 BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
@@ -22,50 +22,40 @@ BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
 def make(settings: Any, deps: Any) -> GeminiLLM:
     return GeminiLLM(
-        deps.resolve(settings.api_key_secret_name),
+        lambda: deps.resolve(settings.api_key_secret_name),
         pinned(dict(deps.routes)),
         settings.call_timeout_s,
         settings.max_attempts,
     )
 
 
-class GeminiLLM:
+class GeminiLLM(NetworkLLM):
+    label = "gemini"
+
     def __init__(
         self,
-        api_key: str,
+        key: Callable[[], str],
         routes: dict[str, Any],
         call_timeout_s: float,
         max_attempts: int,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
-        self._headers = {"x-goog-api-key": api_key}
-        self.base_url = BASE_URL
-        self.routes, self.timeout_s = routes, call_timeout_s
-        self.max_attempts, self._sleep = max_attempts, sleep
+        super().__init__(routes, max_attempts, sleep)
+        self._key, self.timeout_s, self.base_url = key, call_timeout_s, BASE_URL
 
-    def chat(
-        self,
-        messages: list[dict[str, Any]],
-        *,
-        system: str,
-        route: str,
-        tools: list[dict[str, Any]] | None = None,
-        documents: list[bytes] | None = None,
-        output_schema: dict[str, Any] | None = None,
-    ) -> Reply:
-        r = self.routes[route]
-        specs, forced = tools_for(tools, output_schema)
+    def _chat(self, route, system, turns, specs, forced, output_schema) -> Reply:
         body: dict[str, Any] = {
-            "systemInstruction": {"parts": [{"text": system}]},
             "contents": [
                 {
                     "role": "model" if role == "assistant" else "user",
                     "parts": [{"text": t} for t in texts],
                 }
-                for role, texts in turns(messages, documents)
+                for role, texts in turns
             ],
-            "generationConfig": {"maxOutputTokens": r.max_tokens},
+            "generationConfig": {"maxOutputTokens": route.max_tokens},
         }
+        if system:
+            body["systemInstruction"] = {"parts": [{"text": system}]}
         if specs:
             body["tools"] = [
                 {
@@ -83,19 +73,32 @@ class GeminiLLM:
             body["toolConfig"] = {
                 "functionCallingConfig": {"mode": "ANY", "allowedFunctionNames": [forced]}
             }
-        url = f"{self.base_url}/models/{quote(r.model_id, safe='')}:generateContent"
+        url = f"{self.base_url}/models/{quote(route.model_id, safe='')}:generateContent"
         started = time.monotonic()
-        resp = with_retry(
-            lambda: post_json(url, body, self._headers, self.timeout_s),
-            label="gemini",
-            max_attempts=self.max_attempts,
-            sleep=self._sleep,
+        got = self._retry(
+            lambda: self._parse(
+                post_json(url, body, {"x-goog-api-key": self._key()}, self.timeout_s)
+            )
         )
-        candidate = (resp.get("candidates") or [{}])[0]
-        parts = (candidate.get("content") or {}).get("parts") or []
-        usage = resp.get("usageMetadata") or {}
         return reply(
-            r,
+            route, **vars(got), started=started, sent=system + json.dumps(body["contents"])
+        )
+
+    @staticmethod
+    def _parse(resp: dict[str, Any]) -> Answer:
+        usage = resp.get("usageMetadata") or {}
+        # Thinking is billed as output; candidatesTokenCount leaves it out.
+        out = (usage.get("candidatesTokenCount") or 0) + (usage.get("thoughtsTokenCount") or 0)
+        tokens = (usage.get("promptTokenCount"), out or None)
+        if not resp.get("candidates"):
+            if (resp.get("promptFeedback") or {}).get(
+                "blockReason"
+            ):  # the prompt itself was blocked
+                return Answer(text="", calls=[], tokens=tokens, stop="SAFETY")
+            raise ValueError("gemini answered with no candidates")  # a ProviderError, never a guess
+        candidate = resp["candidates"][0]
+        parts = (candidate.get("content") or {}).get("parts") or []
+        return Answer(
             # Thought parts are the model's working, never its answer.
             text="".join(p.get("text", "") for p in parts if not p.get("thought")),
             calls=[
@@ -103,8 +106,6 @@ class GeminiLLM:
                 for p in parts
                 if "functionCall" in p
             ],
-            tokens=(usage.get("promptTokenCount"), usage.get("candidatesTokenCount")),
+            tokens=tokens,
             stop=candidate.get("finishReason"),
-            started=started,
-            sent=system + json.dumps(body["contents"]),
         )

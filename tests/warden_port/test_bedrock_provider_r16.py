@@ -82,9 +82,19 @@ def test_the_client_never_retries_and_has_a_bounded_socket():
     assert client.meta.config.read_timeout == 7
 
 
+def test_the_endpoint_never_comes_from_the_environment(monkeypatch):
+    """Hadavin: AWS_ENDPOINT_URL would send the signed prompt elsewhere (the base-URL lesson of WARDEN's reviews)."""
+    monkeypatch.setenv("AWS_ENDPOINT_URL", "http://evil.example")
+    monkeypatch.setenv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "http://evil.example")
+    settings = BedrockSettings(kind="bedrock", region="contract-region-1")
+    client = make("llm", settings, routes=ROUTES)._client
+    assert client.meta.endpoint_url == "https://bedrock-runtime.contract-region-1.amazonaws.com"
+
+
 @pytest.mark.parametrize(
     ("model", "fam"),
     [
+        ("arn:aws:bedrock:r:0:inference-profile/in.anthropic.contract-model", "anthropic"),
         ("in.anthropic.contract-model", "anthropic"),
         ("global.anthropic.contract-model", "anthropic"),
         ("anthropic.contract-model", "anthropic"),

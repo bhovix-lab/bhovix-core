@@ -32,7 +32,9 @@ _NAME = r"^[A-Za-z0-9-]+$"
 
 
 class _LLMSettings(KindSettings):
-    call_timeout_s: float = Field(default=60.0, gt=0)  # the SDK's own socket timeout, per attempt
+    call_timeout_s: float = Field(
+        default=60.0, gt=0
+    )  # socket timeout, per operation (not a wall clock)
     max_attempts: int = Field(default=3, ge=1, le=10)
 
 
@@ -67,6 +69,8 @@ _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 class OpenAICompatSettings(_LLMSettings):
     base_url: str
     api_key_secret_name: str | None = None  # a local Ollama needs none
+    # OpenAI reasoning models refuse `max_tokens` and want `max_completion_tokens`.
+    max_completion_tokens: bool = False
 
     @model_validator(mode="after")
     def _https_or_keyless_loopback(self) -> OpenAICompatSettings:

@@ -28,6 +28,9 @@
 - `ProviderExhausted` from the model ends the run in `NEEDS_PERSON provider_exhausted` instead of escaping.
 - A provider that refuses the request (`ProviderError`, e.g. a bad key) ends the run in
   `NEEDS_PERSON provider_error`; `ProviderExhausted` is now a `ProviderError`.
+- `Reply.stop_reason` is one of `end_turn`, `tool_use`, `max_tokens`, `refusal` for the network kinds. A reply
+  cut off at the output cap or declined ends the run in `NEEDS_PERSON llm_max_tokens` / `llm_refusal` instead
+  of `NO_ACTION`; a cut-off reply's tool calls are dropped (their input may be incomplete).
 - Store: `get_approval_decision`, `list_approvals`, `list_runs`, `touch`, `spend_totals`; `add_cost` raises
   `NotFound`; `Limits.blocked` no longer writes a zero-spend row.
 - The executor calls a heartbeat before every HTTP attempt, so long retries do not look stuck.

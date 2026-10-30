@@ -1,7 +1,8 @@
 """Claude through the ``anthropic`` SDK, on the Claude API, Google Vertex AI or Azure AI Foundry (``platform``).
 
 Ports WARDEN ``AnthropicProvider`` (design 4.3): SDK retries off (``llm/retry.py`` decides), a socket timeout
-per attempt, an explicit base URL on every platform, and ``output_schema`` forced through one tool.
+(``call_timeout_s``, per socket operation, not a wall clock), an explicit base URL on every platform, the key read
+on every call (a rotated key is picked up), and ``output_schema`` forced through one tool.
 Needs ``hadavin-sdk[anthropic]``.
 """
 
@@ -14,8 +15,8 @@ from typing import Any
 
 import anthropic  # the extra: a missing install fails at start-up with the hint (backends.make)
 
-from hadavin_sdk.llm.common import pinned, reply, tools_for, turns
-from hadavin_sdk.llm.retry import with_retry
+from hadavin_sdk.errors import ConfigError
+from hadavin_sdk.llm.common import Answer, NetworkLLM, pinned, reply
 from hadavin_sdk.models import Reply, ToolCall
 
 API_BASE_URL = "https://api.anthropic.com"
@@ -31,85 +32,90 @@ def _vertex_base_url(region: str) -> str:
     return f"https://{region}-aiplatform.googleapis.com/v1"
 
 
-def client(settings: Any, resolve: Callable[[str], str]) -> Any:
+def client(settings: Any, key: str | None) -> Any:
     common = {"timeout": settings.call_timeout_s, "max_retries": 0}
-    if (
-        settings.platform == "vertex"
-    ):  # Google credentials from the workload's identity (ADC), no key
-        return anthropic.AnthropicVertex(
-            region=settings.region,
-            project_id=settings.project_id,
-            base_url=_vertex_base_url(settings.region),
-            **common,
-        )
-    key = resolve(settings.api_key_secret_name)
-    if settings.platform == "foundry":
-        return anthropic.AnthropicFoundry(
-            api_key=key,
-            base_url=f"https://{settings.resource}.services.ai.azure.com/anthropic/",
-            **common,
-        )
-    return anthropic.Anthropic(api_key=key, base_url=API_BASE_URL, **common)
+    try:
+        if (
+            settings.platform == "vertex"
+        ):  # Google credentials from the workload's identity (ADC), no key
+            return anthropic.AnthropicVertex(
+                region=settings.region,
+                project_id=settings.project_id,
+                base_url=_vertex_base_url(settings.region),
+                **common,
+            )
+        if settings.platform == "foundry":
+            return anthropic.AnthropicFoundry(
+                api_key=key,
+                base_url=f"https://{settings.resource}.services.ai.azure.com/anthropic/",
+                **common,
+            )
+        return anthropic.Anthropic(api_key=key, base_url=API_BASE_URL, **common)
+    except ValueError as exc:  # e.g. ANTHROPIC_FOUNDRY_RESOURCE set beside our explicit base URL
+        raise ConfigError(f"backend llm 'anthropic' ({settings.platform}): {exc}") from exc
 
 
 def make(settings: Any, deps: Any) -> AnthropicLLM:
+    name = settings.api_key_secret_name if settings.platform != "vertex" else None
+    key = (lambda: deps.resolve(name)) if name else None
     return AnthropicLLM(
-        client(settings, deps.resolve), pinned(dict(deps.routes)), settings.max_attempts
+        client(settings, key() if key else None),
+        pinned(dict(deps.routes)),
+        settings.max_attempts,
+        key=key,
     )
 
 
-class AnthropicLLM:
+class AnthropicLLM(NetworkLLM):
+    label = "anthropic"
+
     def __init__(
         self,
         client: Any,
         routes: dict[str, Any],
         max_attempts: int,
         sleep: Callable[[float], None] = time.sleep,
+        key: Callable[[], str] | None = None,
     ) -> None:
-        self._client, self.routes = client, routes
-        self.max_attempts, self._sleep = max_attempts, sleep
+        super().__init__(routes, max_attempts, sleep)
+        self._client, self._key = client, key
 
-    def chat(
-        self,
-        messages: list[dict[str, Any]],
-        *,
-        system: str,
-        route: str,
-        tools: list[dict[str, Any]] | None = None,
-        documents: list[bytes] | None = None,
-        output_schema: dict[str, Any] | None = None,
-    ) -> Reply:
-        r = self.routes[route]
-        specs, forced = tools_for(tools, output_schema)
+    def _chat(self, route, system, turns, specs, forced, output_schema) -> Reply:
         request: dict[str, Any] = {
-            "model": r.model_id,
-            "max_tokens": r.max_tokens,
-            "system": system,
+            "model": route.model_id,
+            "max_tokens": route.max_tokens,
             "messages": [
                 {"role": role, "content": [{"type": "text", "text": t} for t in texts]}
-                for role, texts in turns(messages, documents)
+                for role, texts in turns
             ],
         }
+        if system:
+            request["system"] = system
         if specs:
             request["tools"] = specs
         if forced:
             request["tool_choice"] = {"type": "tool", "name": forced}
         started = time.monotonic()
-        resp = with_retry(
-            lambda: self._client.messages.create(**request),
-            label="anthropic",
-            max_attempts=self.max_attempts,
-            sleep=self._sleep,
-        )
-        # Thinking blocks are the model's working, never its answer: only text and tool calls are read.
+        got = self._retry(lambda: self._parse(self._current().messages.create(**request)))
         return reply(
-            r,
+            route,
+            **vars(got),
+            started=started,
+            sent=system + json.dumps(request["messages"]),
+        )
+
+    def _current(self) -> Any:
+        """The client with today's key: the platform secret is read per call, so rotation needs no restart."""
+        return self._client.with_options(api_key=self._key()) if self._key else self._client
+
+    @staticmethod
+    def _parse(resp: Any) -> Answer:
+        # Thinking blocks are the model's working, never its answer: only text and tool calls are read.
+        return Answer(
             text="".join(b.text for b in resp.content if b.type == "text"),
             calls=[
                 ToolCall(name=b.name, input=b.input) for b in resp.content if b.type == "tool_use"
             ],
             tokens=(resp.usage.input_tokens, resp.usage.output_tokens),
             stop=resp.stop_reason,
-            started=started,
-            sent=system + json.dumps(request["messages"]),
         )

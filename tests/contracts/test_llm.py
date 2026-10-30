@@ -50,7 +50,7 @@ def test_a_tool_call_becomes_a_toolcall_priced_from_the_route(wire):
     ]
     assert (reply.input_tokens, reply.output_tokens) == (1200, 40)
     assert reply.cost_usd == _cost(1200, 40)
-    assert reply.model_id  # the route's id (a bedrock suite route names a forced-tool family)
+    assert reply.model_id == wire.routes["default"].model_id
     sent = wire.requests[-1]
     assert wire.max_tokens(sent) == ROUTES["default"].max_tokens
     assert wire.forced(sent) is None
@@ -81,6 +81,22 @@ def test_three_throttles_exhaust_after_exactly_max_attempts(wire):
 def test_a_throttle_then_an_answer_succeeds(wire):
     reply = wire.serve(wire.scenario("throttle"), wire.scenario("text")).chat(**CALL)
     assert reply.text == "No action is needed." and len(wire.requests) == 2
+
+
+def test_a_cut_off_answer_is_charged_and_its_tool_call_dropped(wire):
+    """An answer stopped at the output cap may hold an incomplete tool input: never acted on (WARDEN M7)."""
+    reply = wire.serve(wire.cut_off()).chat(**CALL, tools=TOOLS)
+    assert reply.stop_reason == "max_tokens" and reply.tool_calls == []
+    assert reply.cost_usd == _cost(1200, 40)
+
+
+def test_a_malformed_answer_is_a_provider_error(wire):
+    if wire.kind_name == "bedrock":
+        pytest.skip("Stubber refuses a malformed Converse shape before the kind sees it")
+    bad = {"request_match": {"method": "POST"}, "status": 200, "headers": {}, "body": {"error": {}}}
+    with pytest.raises(ProviderError) as err:
+        wire.serve(bad).chat(**CALL)
+    assert not isinstance(err.value, ProviderExhausted) and len(wire.requests) == 1
 
 
 def test_a_refused_key_fails_at_once_and_is_not_exhaustion(wire):

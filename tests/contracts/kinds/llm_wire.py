@@ -3,7 +3,8 @@ anthropic (three platforms), openai_compat and gemini; botocore's Stubber for be
 
 A wire harness: ``serve(*fixtures, routes=None) -> llm`` queues fixture responses and builds the kind;
 ``requests`` holds what was sent; ``max_tokens(body)`` and ``forced(body)`` read a sent request;
-``answer(name, input)`` is a tool-call fixture for any call; ``close()``.
+``answer(name, input)`` is a tool-call fixture for any call, ``cut_off()`` one stopped at the output cap;
+``close()``.
 """
 
 import copy
@@ -33,7 +34,8 @@ class _HttpWire:
 
     def serve(self, *fixtures, routes=None):
         self.replay.queue.extend(copy.deepcopy(fixtures))
-        return self.build(routes or ROUTES)
+        self.routes = routes or ROUTES
+        return self.build(self.routes)
 
     def close(self) -> None:
         self.replay.close()
@@ -74,6 +76,11 @@ class AnthropicWire(_HttpWire):
         fx["body"]["content"][0].update(name=name, input=args)
         return fx
 
+    def cut_off(self):
+        fx = self.scenario("tool_call")
+        fx["body"]["stop_reason"] = "max_tokens"
+        return fx
+
 
 class OpenAICompatWire(_HttpWire):
     kind_name = "openai_compat"
@@ -81,7 +88,9 @@ class OpenAICompatWire(_HttpWire):
     def build(self, routes):
         from hadavin_sdk.llm.openai_compat import OpenAICompatLLM
 
-        return OpenAICompatLLM(self.replay.url + "/v1", KEY, routes, 5.0, 3, sleep=lambda s: None)
+        return OpenAICompatLLM(
+            self.replay.url + "/v1", lambda: KEY, routes, 5.0, 3, sleep=lambda s: None
+        )
 
     def max_tokens(self, body):
         return body["max_tokens"]
@@ -95,6 +104,11 @@ class OpenAICompatWire(_HttpWire):
         fn.update(name=name, arguments=json.dumps(args))
         return fx
 
+    def cut_off(self):
+        fx = self.scenario("tool_call")
+        fx["body"]["choices"][0]["finish_reason"] = "length"
+        return fx
+
 
 class GeminiWire(_HttpWire):
     kind_name = "gemini"
@@ -102,7 +116,7 @@ class GeminiWire(_HttpWire):
     def build(self, routes):
         from hadavin_sdk.llm import gemini
 
-        llm = gemini.GeminiLLM(KEY, routes, 5.0, 3, sleep=lambda s: None)
+        llm = gemini.GeminiLLM(lambda: KEY, routes, 5.0, 3, sleep=lambda s: None)
         llm.base_url = self.replay.url  # the fixed host, pointed at the replay
         return llm
 
@@ -119,6 +133,11 @@ class GeminiWire(_HttpWire):
             "name": name,
             "args": args,
         }
+        return fx
+
+    def cut_off(self):
+        fx = self.scenario("tool_call")
+        fx["body"]["candidates"][0]["finishReason"] = "MAX_TOKENS"
         return fx
 
 
@@ -169,6 +188,7 @@ class BedrockWire:
             routes = {
                 k: r.model_copy(update={"model_id": self.model_id}) for k, r in routes.items()
             }
+        self.routes = routes
         return BedrockLLM(self.client, routes, 3, sleep=lambda s: None)
 
     def max_tokens(self, body):
@@ -180,6 +200,11 @@ class BedrockWire:
     def answer(self, name, args):
         fx = self.scenario("tool_call")
         fx["body"]["output"]["message"]["content"][0]["toolUse"].update(name=name, input=args)
+        return fx
+
+    def cut_off(self):
+        fx = self.scenario("tool_call")
+        fx["body"]["stopReason"] = "max_tokens"
         return fx
 
     def close(self):

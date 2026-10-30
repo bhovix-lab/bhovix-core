@@ -206,6 +206,14 @@ class Runtime:
                 return self._to(run, S.NEEDS_PERSON, code)
             self.limits.charge(agent_id, reply.cost_usd)
             self.store.add_cost(run.run_id, reply.cost_usd)
+            if reply.stop_reason in (
+                "max_tokens",
+                "refusal",
+            ):  # cut off or declined: never "no action"
+                self._note(
+                    run, "llm", "chat", result="stopped", error_code=f"llm_{reply.stop_reason}"
+                )
+                return self._to(run, S.NEEDS_PERSON, f"llm_{reply.stop_reason}")
             if not reply.tool_calls:
                 return self._to(run, S.NO_ACTION)
             call = reply.tool_calls[0]

@@ -9,6 +9,7 @@ timeout, HTTP 429 or 5xx, a throttling error code) is retried with exponential b
 from __future__ import annotations
 
 import random
+import ssl
 import time
 from collections.abc import Callable
 
@@ -28,6 +29,7 @@ _NETWORK = frozenset(
         "ConnectTimeoutError",
         "ReadTimeoutError",
         "ConnectionClosedError",
+        "TransportError",  # google-auth, refreshing a Vertex token
     }
 )
 # Bedrock error codes worth another attempt (Converse API reference).
@@ -63,13 +65,38 @@ def _error_code(exc: BaseException) -> str:
     return str(response.get("Error", {}).get("Code", "")) if isinstance(response, dict) else ""
 
 
+def _chain(exc: BaseException) -> list[BaseException]:
+    """The error and what it wraps (urllib's ``reason``, ``__cause__``, ``__context__``), at most 8 deep."""
+    seen: list[BaseException] = []
+    todo: list[object] = [exc]
+    while todo and len(seen) < 8:
+        e = todo.pop()
+        if isinstance(e, BaseException) and e not in seen:
+            seen.append(e)
+            todo += [getattr(e, "reason", None), e.__cause__, e.__context__]
+    return seen
+
+
 def transient(exc: BaseException) -> bool:
+    if any(isinstance(e, ssl.SSLError) for e in _chain(exc)):
+        return False  # a certificate problem fails the same way every time
     if _error_code(exc) in _RETRY_CODES:
         return True
     status = _status(exc)
     if status is not None:
-        return status == 429 or status >= 500
+        return status in (408, 429) or status >= 500
     return any(c.__name__ in _NETWORK for c in type(exc).__mro__)
+
+
+def retry_after(exc: BaseException) -> float:
+    """Seconds the server asked for (``Retry-After``, numeric form only), capped at MAX_DELAY_S; else 0."""
+    headers = getattr(exc, "headers", None) or getattr(
+        getattr(exc, "response", None), "headers", None
+    )
+    try:
+        return min(MAX_DELAY_S, max(0.0, float(headers.get("retry-after"))))
+    except (AttributeError, TypeError, ValueError):
+        return 0.0
 
 
 def describe(exc: BaseException) -> str:
@@ -97,6 +124,8 @@ def with_retry[T](
                 raise ProviderExhausted(
                     f"{label}: {describe(exc)} after {max_attempts} attempts"
                 ) from exc
-            # Full jitter: spreads retries from many runs hitting one throttled account. Not crypto.
-            sleep(random.uniform(0, min(MAX_DELAY_S, BASE_DELAY_S * 2 ** (attempt - 1))))  # noqa: S311
+            # Full jitter spreads retries from many runs hitting one throttled account (not crypto); never
+            # sooner than the server asked.
+            jitter = random.uniform(0, min(MAX_DELAY_S, BASE_DELAY_S * 2 ** (attempt - 1)))  # noqa: S311
+            sleep(max(jitter, retry_after(exc)))
     raise AssertionError("unreachable")  # max_attempts >= 1 (settings)

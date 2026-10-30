@@ -9,10 +9,13 @@ import json
 import re
 import time
 import urllib.request
+from collections.abc import Callable
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
 from hadavin_sdk.errors import ConfigError
+from hadavin_sdk.llm.retry import with_retry
 from hadavin_sdk.models import Reply, ToolCall
 
 # The forced tool an `output_schema` becomes: its input schema IS the schema, so the API enforces the shape.
@@ -21,6 +24,8 @@ _EMPTY = {"type": "object", "properties": {}}
 
 # WARDEN register M15: an alias moves when the vendor ships a new model, so a qualified agent would silently
 # change model. Only exact ids are accepted.
+# ponytail: a name heuristic; an untagged Ollama name (`llama3` = `llama3:latest`) still passes. Pin by digest
+# when a client runs Ollama in production.
 _FLOATING = re.compile(
     r"(?i)^(?:sonnet|opus|haiku|fable|default|best|opusplan)(?:\[1m\])?$|[-:]latest$"
 )
@@ -69,7 +74,9 @@ def turns(
 ) -> list[tuple[str, list[str]]]:
     """``[(role, [text, ...])]``. Documents go first in the first user turn, as text (UTF-8, bad bytes
     replaced; PDF and image blocks are a trigger row)."""
-    docs = [d.decode("utf-8", "replace") for d in documents or []]
+    docs = [
+        t for d in documents or [] if (t := d.decode("utf-8", "replace")).strip()
+    ]  # APIs refuse blanks
     out: list[tuple[str, list[str]]] = []
     for m in messages:
         texts = [str(m["content"])]
@@ -100,6 +107,34 @@ def json_in_text(text: str) -> dict[str, Any] | None:
     return None
 
 
+# Why an answer ended, in each provider's words, folded into Reply.stop_reason (WARDEN providers.py B11, M7):
+# `max_tokens` (cut off: incomplete, and asking again ends the same way) and `refusal` (declined or blocked).
+_CUT_OFF = frozenset({"max_tokens", "model_context_window_exceeded", "length", "MAX_TOKENS"})
+_REFUSED = frozenset(
+    {
+        "refusal",
+        "content_filter",
+        "content_filtered",
+        "guardrail_intervened",
+        "SAFETY",
+        "RECITATION",
+        "BLOCKLIST",
+        "PROHIBITED_CONTENT",
+        "SPII",
+        "IMAGE_SAFETY",
+    }
+)
+
+
+def stop_reason(raw: str | None, calls: list[ToolCall]) -> str:
+    """``max_tokens`` | ``refusal`` | ``tool_use`` | ``end_turn``."""
+    if raw in _CUT_OFF:
+        return "max_tokens"
+    if raw in _REFUSED:
+        return "refusal"
+    return "tool_use" if calls else "end_turn"
+
+
 def reply(
     route: Any,
     *,
@@ -110,23 +145,79 @@ def reply(
     started: float,
     sent: str,
 ) -> Reply:
-    """The Reply, priced from the route. Missing usage is estimated from what was sent and received."""
+    """The Reply, priced from the route. Missing usage is estimated from what was sent and received. A cut-off
+    answer keeps its cost but loses its tool calls: their input may be incomplete."""
     tokens_in = tokens[0] or estimate_tokens(sent)
     tokens_out = tokens[1] or estimate_tokens(text + json.dumps([c.input for c in calls]))
     cost = (
         Decimal(tokens_in) * route.input_usd_per_mtok
         + Decimal(tokens_out) * route.output_usd_per_mtok
     ) / Decimal(1_000_000)
+    stop = stop_reason(stop, calls)
     return Reply(
         text=text,
-        tool_calls=calls,
+        tool_calls=[] if stop == "max_tokens" else calls,
         input_tokens=tokens_in,
         output_tokens=tokens_out,
         cost_usd=cost,
         model_id=route.model_id,
-        stop_reason=stop or "end_turn",
+        stop_reason=stop,
         latency_ms=int((time.monotonic() - started) * 1000),
     )
+
+
+@dataclass
+class Answer:
+    """One parsed provider answer, before pricing."""
+
+    text: str
+    calls: list[ToolCall]
+    tokens: tuple[int | None, int | None]
+    stop: str | None
+
+
+class NetworkLLM:
+    """The ``chat`` every network kind shares: the route, the tool list and bounded retries around one request
+    and the parse of its answer, so a malformed answer is a ``ProviderError``, never a stray KeyError that
+    would strand the run. A kind writes ``_chat``."""
+
+    label = ""
+
+    def __init__(
+        self,
+        routes: dict[str, Any],
+        max_attempts: int,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self.routes, self.max_attempts, self._sleep = routes, max_attempts, sleep
+
+    def chat(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        system: str,
+        route: str,
+        tools: list[dict[str, Any]] | None = None,
+        documents: list[bytes] | None = None,
+        output_schema: dict[str, Any] | None = None,
+    ) -> Reply:
+        r = self.routes[route]
+        specs, forced = tools_for(tools, output_schema)
+        return self._chat(r, system, turns(messages, documents), specs, forced, output_schema)
+
+    def _chat(
+        self,
+        route: Any,
+        system: str,
+        turns: list[tuple[str, list[str]]],
+        specs: list[dict[str, Any]],
+        forced: str | None,
+        output_schema: dict[str, Any] | None,
+    ) -> Reply:
+        raise NotImplementedError
+
+    def _retry(self, call: Callable[[], Answer]) -> Answer:
+        return with_retry(call, label=self.label, max_attempts=self.max_attempts, sleep=self._sleep)
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
