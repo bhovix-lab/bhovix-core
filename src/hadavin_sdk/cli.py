@@ -2,6 +2,7 @@
 
   hadavin-sdk [--config DIR] gate <agent>                exit 0 when green, 1 when below the threshold
   hadavin-sdk [--config DIR] limits stop|reset --by WHO  refused until a shared store exists (exit 2)
+  hadavin-sdk [--config DIR] audit verify                exit 0 when the chain audit is intact, 1 when not
 
 ``--config`` goes before the subcommand and overrides ``HADAVIN_CONFIG_DIR``. From a source checkout use ``uv run python -m hadavin_sdk.cli`` so
 the current folder (and its check modules) is importable.
@@ -30,6 +31,8 @@ def main(argv: list[str] | None = None) -> int:
     lim = sub.add_parser("limits", help="kill switch")
     lim.add_argument("action", choices=["stop", "reset"])
     lim.add_argument("--by", required=True)
+    aud = sub.add_parser("audit", help="check the chain audit")
+    aud.add_argument("action", choices=["verify"])
     args = p.parse_args(argv)
     if args.config:
         os.environ["HADAVIN_CONFIG_DIR"] = args.config
@@ -47,6 +50,20 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0 if run.green else 1
 
+    if args.cmd == "audit":
+        b = cfg.backends
+        if b.audit.kind != "chain" or b.store.kind == "memory":
+            print(
+                "refused: audit verify reads a chain audit in a shared store (Postgres); "
+                "a memory store lives inside one running process.",
+                file=sys.stderr,
+            )
+            return 2
+        secrets = make("secrets", b.secrets)
+        signer = make("signer", b.signer, secrets)
+        store = make("store", b.store, secrets)
+        return audit_verify(make("audit", b.audit, secrets, store=store, signer=signer))
+
     if cfg.backends.store.kind == "memory":
         # The memory store lives inside one running process; a separate CLI process cannot reach it, so
         # claiming "stopped" here would be a lie. Use App.limits.stop() in-process until Postgres arrives.
@@ -57,6 +74,19 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     raise NotImplementedError("shared-store kill switch arrives with store.postgres")
+
+
+def audit_verify(audit) -> int:
+    """Recompute the chain, every checkpoint signature and every anchor. Exit 0 intact, 1 not."""
+    result = audit.verify()
+    print(
+        f"{result.rows} rows, signed through row {result.signed_through} "
+        f"({result.unsigned_tail} not signed yet)"
+    )
+    for problem in result.problems:
+        print(f"TAMPERED: {problem}")
+    print("intact" if result.ok else "NOT intact")
+    return 0 if result.ok else 1
 
 
 def kill_switch(limits: Limits, action: str, by: str) -> int:
