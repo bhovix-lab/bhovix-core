@@ -109,6 +109,15 @@ class PostgresSettings(KindSettings):
         return self
 
 
+class EnvSecretsSettings(KindSettings):
+    prefix: str = Field(default="HADAVIN_SECRET_", min_length=1)
+
+
+class AwsSecretsManagerSettings(KindSettings):
+    region: str
+    ttl_s: float = Field(default=300, ge=0)  # 0 = no cache
+
+
 class FakeChannelSettings(KindSettings):
     signing_secret_name: str | None = None
 
@@ -118,16 +127,32 @@ class Entry:
     settings: type[KindSettings]
     factory: str  # "module:function", called as function(settings, deps)
     extra: str | None = None  # pip extra the factory module needs: hadavin-sdk[<extra>]
+    # Design 0: "have" (slice 1), "slice2" (suite + one live run), "slice2-unverified" (suite on fakes only).
+    status: str = "have"
 
 
 _BUILTIN = "hadavin_sdk.backends.builtin"
+_UNVERIFIED = "slice2-unverified"
 
 # Build order (design §4.2): each capability may use only what is built before it, as ALLOWED says.
 TABLE: dict[str, dict[str, Entry]] = {
-    "secrets": {"fake": Entry(KindSettings, f"{_BUILTIN}:fake_secrets")},
+    "secrets": {
+        "fake": Entry(KindSettings, f"{_BUILTIN}:fake_secrets"),
+        "env": Entry(
+            EnvSecretsSettings, "hadavin_sdk.actions.secrets_env:build", status=_UNVERIFIED
+        ),
+        "aws_secrets_manager": Entry(
+            AwsSecretsManagerSettings,
+            "hadavin_sdk.actions.secrets_aws:build",
+            extra="aws",
+            status=_UNVERIFIED,
+        ),
+    },
     "store": {
         "memory": Entry(KindSettings, f"{_BUILTIN}:memory_store"),
-        "postgres": Entry(PostgresSettings, "hadavin_sdk.store.postgres:build", extra="pg"),
+        "postgres": Entry(
+            PostgresSettings, "hadavin_sdk.store.postgres:build", extra="pg", status=_UNVERIFIED
+        ),
     },
     "audit": {"local_dir": Entry(LocalDirSettings, f"{_BUILTIN}:local_dir_audit")},
     "llm": {
