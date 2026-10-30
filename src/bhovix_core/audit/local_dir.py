@@ -31,12 +31,49 @@ class LocalDirSink:
         # Last resort when even the outbox folder cannot be written: kept in memory for reconcile.
         self._pending: list[AuditEvent] = []
 
+    def _entries(self) -> list[dict]:
+        """Index lines, skipping a torn one (disk full mid-append): it records nothing, and must not block
+        the rest. The object it pointed at, if any, is completed by the next write of that event."""
+        if not self.index.exists():
+            return []
+        out = []
+        for line in self.index.read_text("utf-8").splitlines():
+            try:
+                entry = json.loads(line)
+                if isinstance(entry, dict) and "key" in entry:
+                    out.append(entry)
+            except ValueError:
+                continue
+        return out
+
     def _indexed(self, key: str) -> bool:
         # ponytail: O(n) scan of index.jsonl, only on the rare duplicate/half-write path of the local sink.
         # Fine at laptop scale; keep an in-memory key set (or let S3's object listing answer) if it ever matters.
-        if not self.index.exists():
-            return False
-        return any(json.loads(x)["key"] == key for x in self.index.read_text("utf-8").splitlines())
+        return any(e["key"] == key for e in self._entries())
+
+    @staticmethod
+    def _fsync_dir(path: Path) -> None:
+        """Make a new directory entry durable (POSIX). Windows cannot open a folder for fsync: best effort."""
+        try:
+            fd = os.open(path, os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            os.fsync(fd)
+        except OSError:
+            pass
+        finally:
+            os.close(fd)
+
+    def _append_index(self, entry: dict) -> None:
+        torn = self.index.exists() and self.index.stat().st_size > 0
+        torn = torn and not self.index.read_bytes().endswith(b"\n")
+        with open(self.index, "a", encoding="utf-8") as f:
+            # Close off a torn tail first, so this entry is a whole line of its own.
+            f.write(("\n" if torn else "") + json.dumps(entry, sort_keys=True) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        self._fsync_dir(self.root)
 
     def _write(self, event: AuditEvent) -> str:
         body = event.model_dump_json().encode("utf-8")
@@ -52,16 +89,14 @@ class LocalDirSink:
                     os.fsync(f.fileno())
                 try:
                     os.link(tmp, self.objects / key)  # atomic, and fails if the object exists
+                    self._fsync_dir(self.objects)
                 except FileExistsError:
                     # Same bytes and no index line = a half-finished earlier write: finish it.
                     if self._indexed(key) or (self.objects / key).read_bytes() != body:
                         raise DuplicateEvent(event.event_id) from None
             finally:
                 Path(tmp).unlink(missing_ok=True)
-            with open(self.index, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, sort_keys=True) + "\n")
-                f.flush()
-                os.fsync(f.fileno())
+            self._append_index(entry)
         return key
 
     def write_intent(self, event: AuditEvent) -> str:
@@ -81,33 +116,40 @@ class LocalDirSink:
         except Exception:  # noqa: BLE001 - disk errors, a corrupt index line: the contract is "never raises"
             try:
                 self.outbox.mkdir(parents=True, exist_ok=True)
-                (self.outbox / f"{event.event_id}.json").write_text(
-                    event.model_dump_json(), encoding="utf-8"
-                )
+                tmp = self.outbox / f".tmp-{event.event_id}"
+                tmp.write_text(event.model_dump_json(), encoding="utf-8")
+                os.replace(tmp, self.outbox / f"{event.event_id}.json")  # never a half file
             except Exception:  # noqa: BLE001
                 self._pending.append(event)
             return None
 
     def reconcile(self) -> int:
+        """Drain memory and the outbox. A corrupt outbox file is moved to ``outbox/corrupt/`` (kept for a
+        person, counted nowhere) so it can never block the files after it."""
         done = 0
         for event in list(self._pending):
             try:
                 self._write(event)
             except DuplicateEvent:
                 pass
-            except OSError:
+            except Exception:  # noqa: BLE001, S112 - stays pending, retried next time
                 continue
             self._pending.remove(event)
             done += 1
         if not self.outbox.exists():
             return done
         for path in sorted(self.outbox.glob("*.json")):
-            event = AuditEvent.model_validate_json(path.read_text(encoding="utf-8"))
+            try:
+                event = AuditEvent.model_validate_json(path.read_text(encoding="utf-8"))
+            except ValueError:
+                (self.outbox / "corrupt").mkdir(exist_ok=True)
+                os.replace(path, self.outbox / "corrupt" / path.name)
+                continue
             try:
                 self._write(event)
             except DuplicateEvent:
                 pass
-            except OSError:
+            except Exception:  # noqa: BLE001, S112 - stays in the outbox, retried next time
                 continue
             path.unlink()
             done += 1
@@ -116,20 +158,16 @@ class LocalDirSink:
     def verify_object(self, key: str) -> bool:
         body = (self.objects / key).read_bytes()
         digest = hashlib.sha256(body).hexdigest()
-        for line in self.index.read_text(encoding="utf-8").splitlines():
-            entry = json.loads(line)
+        for entry in self._entries():
             if entry["key"] == key:
-                return entry["sha256"] == digest
+                return entry.get("sha256") == digest
         return False
 
     def events(self, run_id: str | None = None) -> list[AuditEvent]:
         """Read back, in write order (index order)."""
-        if not self.index.exists():
-            return []
         out = []
-        for line in self.index.read_text(encoding="utf-8").splitlines():
-            entry = json.loads(line)
-            if run_id is None or entry["run_id"] == run_id:
+        for entry in self._entries():
+            if run_id is None or entry.get("run_id") == run_id:
                 out.append(
                     AuditEvent.model_validate_json(
                         (self.objects / entry["key"]).read_text(encoding="utf-8")

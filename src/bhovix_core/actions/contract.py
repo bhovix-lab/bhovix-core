@@ -68,14 +68,31 @@ def schema_problems(schema: Any, where: str = "input_schema") -> list[str]:
     if not isinstance(schema, dict):
         return [f"{where}: must be a mapping"]
     out = [f"{where}: unsupported keyword {k}" for k in schema if k not in _KEYWORDS]
-    if "type" in schema and schema["type"] not in _TYPES:
-        out.append(f"{where}: unsupported type {schema['type']!r} (use string for numbers)")
+    t = schema.get("type")
+    if "type" in schema and (not isinstance(t, str) or t not in _TYPES):
+        out.append(f"{where}: unsupported type {t!r} (use string for numbers)")
     if "pattern" in schema:
         try:
+            if not isinstance(schema["pattern"], str):
+                raise TypeError
             re.compile(schema["pattern"])
         except (re.error, TypeError):
             out.append(f"{where}: bad pattern")
-    for k, sub in (schema.get("properties") or {}).items():
+    for key in ("maxLength", "minLength"):
+        v = schema.get(key)
+        if key in schema and (not isinstance(v, int) or isinstance(v, bool) or v < 0):
+            out.append(f"{where}: {key} must be a non-negative integer")
+    if "enum" in schema and not isinstance(schema["enum"], list):
+        out.append(f"{where}: enum must be a list")
+    req = schema.get("required", [])
+    if not isinstance(req, list) or not all(isinstance(r, str) for r in req):
+        out.append(f"{where}: required must be a list of names")
+    if "additionalProperties" in schema and not isinstance(schema["additionalProperties"], bool):
+        out.append(f"{where}: additionalProperties must be true or false")
+    props = schema.get("properties", {})
+    if not isinstance(props, dict):
+        return [*out, f"{where}: properties must be a mapping"]
+    for k, sub in props.items():
         out += schema_problems(sub, f"{where}.{k}")
     return out
 

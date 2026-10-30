@@ -23,7 +23,8 @@ def verify(headers: Mapping[str, str], body: bytes, now_ts: float, signing_secre
         return False
     h = {k.lower(): v for k, v in headers.items()}
     ts, sig = h.get("x-slack-request-timestamp", ""), h.get("x-slack-signature", "")
-    if not (ts.isascii() and ts.isdigit()) or abs(now_ts - int(ts)) > MAX_AGE_S:
+    # Unix seconds fit in 12 digits; a longer header would make int() raise past Python's digit limit.
+    if not (ts.isascii() and ts.isdigit() and len(ts) <= 12) or abs(now_ts - int(ts)) > MAX_AGE_S:
         return False
     if not (sig.isascii() and sig.startswith("v0=")):
         return False

@@ -192,7 +192,11 @@ class Runtime:
             if call.name in self.registry.contracts:
                 return self._submit(run, call)
             if call.name in self.hooks.tools and call.name in agent.tools_allowed:
-                result = str(self.hooks.tools[call.name](call.input))
+                try:
+                    result = str(self.hooks.tools[call.name](call.input))
+                except Exception:  # noqa: BLE001 - a broken tool must not strand the run in WORKING
+                    self._note(run, "tool", call.name, result="error", error_code="tool_error")
+                    return self._to(run, S.NEEDS_PERSON, "tool_error")
                 verdict = injection_check(self.detector, result, f"tool:{call.name}")
                 if verdict.flagged:  # tool output is untrusted text too
                     self._note(

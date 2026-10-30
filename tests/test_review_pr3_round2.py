@@ -288,9 +288,77 @@ def test_write_outcome_survives_corrupt_index(tmp_path):
     ev = AuditEvent(run_id="r", domain="d", operation="o", principal="p", source="s")
     sink.objects.mkdir(parents=True)
     (sink.objects / f"{ev.event_id}.json").write_bytes(ev.model_dump_json().encode())
-    sink.index.write_text("{not json\n", encoding="utf-8")  # forces _indexed() to hit a bad line
-    assert sink.write_outcome(ev) is None  # no exception; parked in the outbox
-    assert len(list(sink.outbox.glob("*.json"))) == 1
+    sink.index.write_text('{not json\n{"key": "x.json', encoding="utf-8")  # bad line + torn tail
+    # No exception, and the corrupt index is recoverable: the half-written event is completed.
+    assert sink.write_outcome(ev) == f"{ev.event_id}.json"
+    assert [e.event_id for e in sink.events()] == [ev.event_id]
+    assert sink.verify_object(f"{ev.event_id}.json")
+
+
+# CodeRabbit on f5ea960: a partial outbox file is quarantined and never blocks reconcile
+def test_corrupt_outbox_file_does_not_block_reconcile(tmp_path, monkeypatch):
+    from bhovix_core.audit import LocalDirSink
+    from bhovix_core.models import AuditEvent
+
+    sink = LocalDirSink(tmp_path)
+    real = sink._write
+    monkeypatch.setattr(sink, "_write", lambda e: (_ for _ in ()).throw(OSError("down")))
+    good = AuditEvent(run_id="r", domain="d", operation="o", principal="p", source="s")
+    assert sink.write_outcome(good) is None
+    (sink.outbox / "aaa-torn.json").write_text('{"event_id": "evt-x", "ru', encoding="utf-8")
+    monkeypatch.setattr(sink, "_write", real)
+    assert sink.reconcile() == 1
+    assert (sink.outbox / "corrupt" / "aaa-torn.json").exists()
+    assert [e.event_id for e in sink.events()] == [good.event_id]
+    assert not list(sink.outbox.glob(".tmp-*"))
+
+
+# CodeRabbit on f5ea960: directory fsync is best effort and never raises (Windows cannot fsync a folder)
+def test_fsync_dir_never_raises(tmp_path):
+    from bhovix_core.audit import LocalDirSink
+
+    LocalDirSink._fsync_dir(tmp_path)
+    LocalDirSink._fsync_dir(tmp_path / "missing")
+
+
+# CodeRabbit on f5ea960: wrong-shaped schema values are config errors, not crashes
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"type": ["string"]},
+        {"type": "string", "maxLength": "80"},
+        {"type": "string", "pattern": 5},
+        {"type": "object", "properties": ["id"]},
+        {"type": "object", "required": "id"},
+        {"type": "object", "additionalProperties": "no"},
+        {"type": "string", "enum": "a"},
+    ],
+)
+def test_wrong_shaped_schema_is_config_error(cfg_dir, bad):
+    _edit(
+        cfg_dir / "actions" / "create_draft_record.yaml",
+        lambda d: d["input_schema"]["properties"].update(title=bad),
+    )
+    with pytest.raises(ConfigError):
+        load_registry(load_config(cfg_dir))
+
+
+# CodeRabbit on f5ea960: an over-long Slack timestamp returns False instead of raising
+def test_very_long_slack_timestamp_refused():
+    headers = {"X-Slack-Request-Timestamp": "9" * 5000, "X-Slack-Signature": "v0=x"}
+    assert not verify(headers, b"", 0, SECRET)
+
+
+# CodeRabbit on f5ea960: a tool that raises ends the run in NEEDS_PERSON, not WORKING
+def test_tool_exception_needs_a_person(cfg_dir):
+    _edit(cfg_dir / "agents.yaml", lambda d: d[0].update(tools_allowed=["echo"]))
+
+    def broken(inp):
+        raise RuntimeError("tool down")
+
+    rt, cfg = build_rt(cfg_dir, Hooks(tools={"echo": broken}))
+    run = rt.handle("test-agent", "svc:test-agent", (cfg.inputs_dir / "loop.txt").read_bytes())
+    assert (run.state, run.reason_code) == (S.NEEDS_PERSON, "tool_error")
 
 
 # CodeRabbit on f33a53f: golden refs validated at start-up, not only at gate time
