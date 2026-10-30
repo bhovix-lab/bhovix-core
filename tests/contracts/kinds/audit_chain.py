@@ -16,6 +16,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from hadavin_sdk.actions.secrets import FakeSecretProvider
 from hadavin_sdk.audit import signer as signer_mod
+from hadavin_sdk.audit.signer_aws import KmsSigner
 from hadavin_sdk.backends import make
 from hadavin_sdk.backends.table import ChainSettings, Ed25519LocalSettings, KindSettings
 from tests.contracts.kinds import kind
@@ -110,9 +111,9 @@ def ed25519_local(tmp_path):
 
 @kind("signer", "aws_kms")
 def aws_kms(tmp_path):
-    signer = signer_mod.probe(signer_mod.KmsSigner(KEY_ALIAS, kms_stub()), "signer aws_kms")
+    signer = signer_mod.probe(KmsSigner(KEY_ALIAS, kms_stub()), "signer aws_kms")
     return signer, lambda: signer_mod.probe(
-        signer_mod.KmsSigner("alias/" + "gone", kms_stub()), "signer aws_kms"
+        KmsSigner("alias/" + "gone", kms_stub()), "signer aws_kms"
     )
 
 

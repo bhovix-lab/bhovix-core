@@ -56,8 +56,9 @@ def build(
     executor_names = {c.executor.secret_name for c in reg.contracts.values()}
     platform_secrets.check(secrets, [s for _, s in b.entries()], executor_names)
     signer = make("signer", b.signer, secrets)
+    anchor = make("anchor", b.anchor, secrets)
     store = make("store", b.store, secrets)
-    audit = make("audit", b.audit, secrets, store=store, signer=signer)
+    audit = make("audit", b.audit, secrets, store=store, signer=signer, anchor=anchor)
     llm = make("llm", b.llm, secrets, routes=cfg.routes)
     summary_detector = detector
     if detector is None:

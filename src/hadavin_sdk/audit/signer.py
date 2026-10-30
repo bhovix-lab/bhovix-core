@@ -1,8 +1,10 @@
-"""Checkpoint signers (OD-4): Ed25519 only, so an auditor verifies a checkpoint with the public key alone.
+"""Checkpoint signers (OD-4): Ed25519, or ECDSA P-256 where the key store has no Ed25519 (Azure Key Vault), so
+an auditor verifies a checkpoint with the public key alone.
 
-Ported from WARDEN `audit.py` (main c78d7709): `KmsSigner` and the key helpers (`key_path`, `generate_key`,
-`load_private_key`, `load_public_key`). Edits: each signer has a stable `key_id` and `alg`, and `public_key()`
-returns the raw 32 bytes. Needs `cryptography` (`pip install hadavin-sdk[signer]`; `aws_kms` also needs `[aws]`).
+This module holds the Protocol, the local check, the `ed25519_local` kind and the key helpers ported from
+WARDEN `audit.py` (main c78d7709: `key_path`, `generate_key`, `load_private_key`, `load_public_key`); every
+cloud or Vault signer lives in its own kind module (`signer_aws`, `signer_azure`, `signer_gcp`, `signer_vault`)
+and imports its SDK there. Needs only `cryptography` (`pip install hadavin-sdk[signer]`).
 """
 
 from __future__ import annotations
@@ -10,34 +12,47 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Literal, Protocol
 
 from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ed25519
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519
+from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 
 from hadavin_sdk.errors import ConfigError
 
 _RAW = (serialization.Encoding.Raw, serialization.PublicFormat.Raw)
 
 
+Alg = Literal["ed25519", "ecdsa-p256"]
+
+
 class Signer(Protocol):
     key_id: str
-    alg: Literal["ed25519"]
+    alg: Alg
 
     def sign(self, message: bytes) -> bytes:
-        """A 64-byte Ed25519 signature over the raw message."""
+        """64 bytes over the raw message: an Ed25519 signature, or ECDSA P-256/SHA-256 as raw r || s."""
         ...
 
     def public_key(self) -> bytes:
-        """The raw 32-byte public key."""
+        """Raw: 32 bytes (Ed25519), or the 65-byte uncompressed SEC1 point (ECDSA P-256)."""
         ...
 
 
-def verify_signature(public_key: bytes, signature: bytes, message: bytes) -> bool:
+def verify_signature(
+    public_key: bytes, signature: bytes, message: bytes, alg: Alg = "ed25519"
+) -> bool:
     """Local check with the public key alone: what an auditor runs."""
     try:
-        ed25519.Ed25519PublicKey.from_public_bytes(public_key).verify(signature, message)
+        if alg == "ed25519":
+            ed25519.Ed25519PublicKey.from_public_bytes(public_key).verify(signature, message)
+        elif alg == "ecdsa-p256" and len(signature) == 64:
+            point = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), public_key)
+            r, s = int.from_bytes(signature[:32], "big"), int.from_bytes(signature[32:], "big")
+            point.verify(encode_dss_signature(r, s), message, ec.ECDSA(hashes.SHA256()))
+        else:
+            return False
     except (InvalidSignature, ValueError):
         return False
     return True
@@ -59,42 +74,11 @@ class LocalSigner:
         return self._key.public_key().public_bytes(*_RAW)
 
 
-class KmsSigner:
-    """An Ed25519 key held by AWS KMS: it signs, and nobody (Hadavin included) can export it, so a copy of the
-    database and the code is not enough to sign a rewritten history. ECC_NIST_EDWARDS25519 keys sign with
-    ED25519_SHA_512 over the RAW message; the signature is plain Ed25519."""
-
-    alg: Literal["ed25519"] = "ed25519"
-
-    def __init__(self, key_id: str, client: Any) -> None:
-        self.key_id, self._kms = key_id, client
-        self._public: bytes | None = None
-
-    def sign(self, message: bytes) -> bytes:
-        return self._kms.sign(
-            KeyId=self.key_id,
-            Message=message,
-            MessageType="RAW",
-            SigningAlgorithm="ED25519_SHA_512",
-        )["Signature"]
-
-    def public_key(self) -> bytes:
-        if self._public is None:  # a key's public half never changes: one GetPublicKey per process
-            der = self._kms.get_public_key(KeyId=self.key_id)["PublicKey"]
-            key = serialization.load_der_public_key(der)
-            if not isinstance(key, ed25519.Ed25519PublicKey):
-                raise ConfigError(
-                    f"signer aws_kms: {self.key_id} is not an ECC_NIST_EDWARDS25519 key"
-                )
-            self._public = key.public_bytes(*_RAW)
-        return self._public
-
-
 def probe(signer: Signer, label: str) -> Signer:
     """Start-up: sign a test message and verify it, so an unreachable or wrong key fails before the first run."""
     message = b"hadavin-signer-probe"
     try:
-        ok = verify_signature(signer.public_key(), signer.sign(message), message)
+        ok = verify_signature(signer.public_key(), signer.sign(message), message, signer.alg)
     except ConfigError:
         raise
     except Exception as exc:
@@ -108,26 +92,26 @@ def probe(signer: Signer, label: str) -> Signer:
 
 
 def build_local(settings, deps) -> LocalSigner:
-    path = Path(settings.private_key_path)
-    if not path.is_file():
-        raise ConfigError(f"signer ed25519_local: no key file at {path}")
+    """The PEM from `private_key_secret_name` (any secrets kind: Vault, a mounted Secret, a cloud store), or
+    from `private_key_path` (dev and pilot only: a key file in an image or on a disk can be copied)."""
     name = settings.passphrase_secret_name
     passphrase = deps.resolve(name).encode("utf-8") if name else None
+    if settings.private_key_secret_name:
+        source = f"secret {settings.private_key_secret_name!r}"
+        pem = deps.resolve(settings.private_key_secret_name).encode("utf-8")
+    else:
+        path = Path(settings.private_key_path)
+        if not path.is_file():
+            raise ConfigError(f"signer ed25519_local: no key file at {path}")
+        source, pem = str(path), path.read_bytes()
     try:
-        key = load_private_key(path, passphrase)
+        key = _private_key(pem, passphrase, source)
     except (TypeError, ValueError) as exc:
-        raise ConfigError(f"signer ed25519_local: cannot load {path} ({exc})") from None
+        # The class only: a parse error must never echo key material.
+        raise ConfigError(
+            f"signer ed25519_local: cannot load {source} ({type(exc).__name__})"
+        ) from None
     return probe(LocalSigner(key), "signer ed25519_local")
-
-
-def build_kms(settings, deps) -> KmsSigner:
-    import boto3  # the `aws` extra
-    from botocore.config import Config
-
-    # Checkpoints are signed inline every N audit rows: bounded, not botocore's 60 s defaults.
-    config = Config(connect_timeout=3, read_timeout=5, retries={"total_max_attempts": 2})
-    client = boto3.client("kms", region_name=settings.region, config=config)
-    return probe(KmsSigner(settings.key_id, client), "signer aws_kms")
 
 
 # --------------------------------------------------------------------------- keys
@@ -208,9 +192,13 @@ def generate_key(
 
 
 def load_private_key(path: Path, passphrase: bytes | None = None) -> ed25519.Ed25519PrivateKey:
-    key = serialization.load_pem_private_key(path.read_bytes(), password=passphrase)
+    return _private_key(path.read_bytes(), passphrase, str(path))
+
+
+def _private_key(pem: bytes, passphrase: bytes | None, source: str) -> ed25519.Ed25519PrivateKey:
+    key = serialization.load_pem_private_key(pem, password=passphrase)
     if not isinstance(key, ed25519.Ed25519PrivateKey):
-        raise TypeError(f"{path} is not an Ed25519 private key")
+        raise TypeError(f"{source} is not an Ed25519 private key")
     return key
 
 

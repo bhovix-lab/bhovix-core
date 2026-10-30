@@ -93,6 +93,17 @@ class VaultProvider(CachedSecrets):
             raise VaultError(f"Vault answered {status} with an unexpected JSON shape")
         return status, parsed
 
+    def authed(self, method: str, path: str, body: dict | None = None):
+        """A call with the Vault token; a 403 (expired or revoked token) signs in again, once. Not
+        thread-safe by itself: callers hold a lock (CachedSecrets.get, the transit signer)."""
+        if self._token is None:
+            self._token = self._login(self)
+        status, answer = self.call(method, path, body, token=self._token)
+        if status == 403 and self._renewable:
+            self._token = self._login(self)
+            status, answer = self.call(method, path, body, token=self._token)
+        return status, answer
+
     def _fetch(self, name: str) -> str:
         if not _NAME.fullmatch(name) or name in {
             ".",
@@ -101,15 +112,7 @@ class VaultProvider(CachedSecrets):
             raise ConfigError(
                 f"secret {name!r}: Vault names here are letters, digits, '.', '_', '-'"
             )
-        path = f"{self.mount}/data/{self.path_prefix}{name}"
-        if self._token is None:
-            self._token = self._login(self)
-        status, body = self.call("GET", path, token=self._token)
-        if (
-            status == 403 and self._renewable
-        ):  # the token expired or was revoked: sign in again, once
-            self._token = self._login(self)
-            status, body = self.call("GET", path, token=self._token)
+        status, body = self.authed("GET", f"{self.mount}/data/{self.path_prefix}{name}")
         if status == 404:
             raise ConfigError(f"secret {name!r} not found in Vault")
         if status != 200:
@@ -147,6 +150,18 @@ def _env(name: str) -> str:
 
 
 def build(settings, deps) -> VaultProvider:
+    return connect(
+        settings,
+        ttl_s=settings.ttl_s,
+        mount=settings.mount,
+        path_prefix=settings.path_prefix,
+        field=settings.field,
+    )
+
+
+def connect(settings, **kw: Any) -> VaultProvider:
+    """A Vault client from connection settings (address, auth, namespace, CA, timeout): the `vault`
+    secrets kind, and the `vault_transit` signer's HTTP client."""
     if settings.auth == "token":
 
         def login(p: VaultProvider) -> str:
@@ -159,7 +174,12 @@ def build(settings, deps) -> VaultProvider:
     else:
 
         def login(p: VaultProvider) -> str:
-            jwt = Path(settings.jwt_path).read_text(encoding="utf-8").strip()
+            try:
+                jwt = Path(settings.jwt_path).read_text(encoding="utf-8").strip()
+            except (OSError, UnicodeDecodeError) as exc:
+                raise ConfigError(
+                    f"vault kubernetes sign-in: cannot read {settings.jwt_path} ({type(exc).__name__})"
+                ) from None
             payload = {"role": settings.role, "jwt": jwt}
             return _login_with(p, settings.auth_mount or "kubernetes", payload)
 
@@ -167,12 +187,9 @@ def build(settings, deps) -> VaultProvider:
     return VaultProvider(
         settings.address,
         login,
-        mount=settings.mount,
-        path_prefix=settings.path_prefix,
-        field=settings.field,
         namespace=settings.namespace,
         context=context,
         timeout_s=settings.timeout_s,
         renewable=settings.auth != "token",
-        ttl_s=settings.ttl_s,
+        **kw,
     )

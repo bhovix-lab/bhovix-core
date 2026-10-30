@@ -4,7 +4,8 @@ Works with anything that mounts secrets as files: a Kubernetes Secret volume, th
 External Secrets, Docker/Swarm secrets, systemd credentials. `<dir>/<name>` is read, re-read after `ttl_s` (a
 rotated mount is picked up), and one trailing newline is dropped. The path must stay inside the folder
 (symlinks are resolved first, so Kubernetes' `..data` links work). On POSIX a file readable by every user is
-refused: mount with `defaultMode: 0400` (or 0440 with an `fsGroup`), not Kubernetes' default 0644.
+refused, and so is one writable by its group or others: mount with `defaultMode: 0400` (or 0440 with an `fsGroup`),
+not Kubernetes' default 0644. The checks run on the opened file (fstat), so nothing changes between check and read.
 """
 
 from __future__ import annotations
@@ -28,24 +29,37 @@ class MountedFileProvider(CachedSecrets):
         self.root = Path(root)
 
     def _fetch(self, name: str) -> str:
-        # ConfigError on `..`, absolute names or links out of the folder.
+        # ConfigError on `..`, absolute names or links out of the folder. The result is the real path, so
+        # O_NOFOLLOW below refuses a link swapped in after this check.
         path = confined(self.root, name)
+        # O_NONBLOCK: a FIFO planted in the folder must not hang the open (S_ISREG below then refuses it).
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        flags |= getattr(os, "O_BINARY", 0)
         try:
-            mode = path.stat().st_mode
-            if os.name != "nt" and mode & stat.S_IROTH:
-                # Windows has no "other" bit; its folder ACL decides who reads the file.
-                raise ConfigError(
-                    f"secret {name!r}: the file is readable by every user; mount it 0400 or 0440"
-                )
-            if not stat.S_ISREG(mode):
-                raise ConfigError(f"secret {name!r} is not a regular file")
-            text = path.read_text(encoding="utf-8")
+            fd = os.open(path, flags)
         except FileNotFoundError:
             raise ConfigError(f"secret {name!r} not found in the mounted folder") from None
-        except (OSError, UnicodeDecodeError) as exc:  # e.g. PermissionError: wrong owner or fsGroup
+        except OSError as exc:  # e.g. PermissionError (wrong owner or fsGroup), ELOOP (a link)
             raise ConfigError(
                 f"secret {name!r}: the mounted file cannot be read ({type(exc).__name__})"
             ) from None
+        # Checked on the open file itself, so nothing can change between the check and the read.
+        with os.fdopen(fd, "rb") as f:
+            mode = os.fstat(f.fileno()).st_mode
+            if not stat.S_ISREG(mode):
+                raise ConfigError(f"secret {name!r} is not a regular file")
+            # Windows has no group/other bits; its folder ACL decides who reads or writes the file.
+            if os.name != "nt" and mode & (stat.S_IROTH | stat.S_IWGRP | stat.S_IWOTH):
+                raise ConfigError(
+                    f"secret {name!r}: the file is readable by every user or writable by others; "
+                    "mount it 0400 or 0440"
+                )
+            try:
+                text = f.read().decode("utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                raise ConfigError(
+                    f"secret {name!r}: the mounted file cannot be read ({type(exc).__name__})"
+                ) from None
         return text.removesuffix("\n").removesuffix("\r")
 
 
