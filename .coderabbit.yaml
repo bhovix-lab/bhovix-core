@@ -1,0 +1,16 @@
+# CodeRabbit review settings (advisory reviewer; the required checks are the CI jobs `check` and `security`).
+language: en-US
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  path_filters:
+    - "!uv.lock"
+    - "!**/*.min.*"
+  auto_review:
+    enabled: true
+    drafts: false
+chat:
+  auto_reply: true
