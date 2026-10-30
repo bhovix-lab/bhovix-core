@@ -348,7 +348,12 @@ def test_the_guardrail_client_is_pinned_to_its_region(monkeypatch, tmp_path):
     monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
     monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
     monkeypatch.setenv("AWS_ENDPOINT_URL", "http://evil.example")
+    from hadavin_sdk.guard import bedrock_guardrail
+
+    seen = []
+    monkeypatch.setattr(bedrock_guardrail, "check_filter", lambda c, *a: seen.append(c))
     detector = make("detector", guardrail_settings())
+    assert seen[0].meta.endpoint_url == "https://bedrock.contract-region-1.amazonaws.com"
     assert detector._client.meta.endpoint_url == (
         "https://bedrock-runtime.contract-region-1.amazonaws.com"
     )

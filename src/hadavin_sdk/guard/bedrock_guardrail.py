@@ -5,8 +5,10 @@ PROMPT_ATTACK filter blocked or detected the text, else 0.0; its other policies 
 injection signal here. Any API error, an answer that is not one of the documented shapes, or text the guardrail
 only partly screened raises, which ``injection_check`` turns into a flag (fail closed).
 
-Known limit: a guardrail whose PROMPT_ATTACK input filter is missing or set to NONE never flags. Its
-configuration is the client's (S11 checklist); the P9 live run screens the seeded injection once.
+A guardrail whose PROMPT_ATTACK input filter is missing or set to NONE would never flag, so start-up reads the
+guardrail's configuration (``GetGuardrail``, IAM ``bedrock:GetGuardrail``) and refuses it (``ConfigError``).
+
+AWS only. The cloud-neutral detectors are ``regex`` and ``llm_judge`` (on any llm kind, a local model included).
 """
 
 from __future__ import annotations
@@ -16,15 +18,16 @@ from typing import Any
 import boto3  # the extra: a missing install fails at start-up with the hint (backends.make)
 from botocore.config import Config
 
+from hadavin_sdk.errors import ConfigError
 from hadavin_sdk.models import Verdict
 
 _ACTIONS = frozenset({"NONE", "GUARDRAIL_INTERVENED"})
 
 
-def make(settings: Any, deps: Any) -> GuardrailDetector:
-    client = boto3.client(
-        "bedrock-runtime",
-        region_name=settings.region,
+def _client(service: str, region: str) -> Any:
+    return boto3.client(
+        service,
+        region_name=region,
         config=Config(
             connect_timeout=5,
             read_timeout=10,
@@ -34,8 +37,34 @@ def make(settings: Any, deps: Any) -> GuardrailDetector:
             ignore_configured_endpoint_urls=True,
         ),
     )
+
+
+def check_filter(control: Any, guardrail_id: str, version: str) -> None:
+    """Start-up: the guardrail has a PROMPT_ATTACK input filter that is on, else ConfigError."""
+    label = f"backend detector 'bedrock_guardrail' {guardrail_id}:{version}"
+    try:
+        resp = control.get_guardrail(guardrailIdentifier=guardrail_id, guardrailVersion=version)
+    except Exception as exc:
+        raise ConfigError(f"{label}: cannot read the guardrail ({type(exc).__name__})") from exc
+    filters = (resp.get("contentPolicy") or {}).get("filters") or []
+    if not any(
+        f.get("type") == "PROMPT_ATTACK"
+        and f.get("inputStrength", "NONE") != "NONE"
+        and f.get("inputEnabled", True) is not False
+        for f in filters
+    ):
+        raise ConfigError(f"{label}: no PROMPT_ATTACK input filter is on, so it would never flag")
+
+
+def make(settings: Any, deps: Any) -> GuardrailDetector:
+    check_filter(
+        _client("bedrock", settings.region), settings.guardrail_id, settings.guardrail_version
+    )
     return GuardrailDetector(
-        client, settings.guardrail_id, settings.guardrail_version, settings.threshold
+        _client("bedrock-runtime", settings.region),
+        settings.guardrail_id,
+        settings.guardrail_version,
+        settings.threshold,
     )
 
 

@@ -57,8 +57,9 @@ def make(settings: Any, deps: Any) -> BedrockLLM:
 
 
 def floating(model_id: str) -> bool:
-    """Bedrock model and inference-profile ids carry their version (`...-v1:0`); only `latest` moves."""
-    return False
+    """Bedrock model and inference-profile ids carry their version (`...-v1:0`) and a provider prefix
+    (`anthropic.`); a bare name (`sonnet`) is someone else's alias, never a Bedrock id."""
+    return "." not in model_id and not model_id.startswith("arn:")
 
 
 # Error codes worth another attempt (Converse API reference).

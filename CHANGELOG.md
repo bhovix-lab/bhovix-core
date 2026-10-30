@@ -3,6 +3,17 @@
 ## Unreleased
 
 ### Upgrade steps
+- **P5/P6 follow-ups.**
+  - An agent gated with `eval_threshold` other than 1.0, or on an `openai_compat` llm with
+    `max_completion_tokens: true`, needs one new gate run, because both now count toward `config_hash`.
+  - A detector `threshold: 0` is refused (it flagged every clean text).
+  - A `bedrock_guardrail` needs `bedrock:GetGuardrail`. Start-up refuses a guardrail with no PROMPT_ATTACK
+    input filter switched on.
+  - Moving model aliases are refused per kind:
+    - OpenAI names with no dated snapshot (`gpt-4o`, `o3`);
+    - untagged names on a local OpenAI-compatible server (Ollama: `llama3` means `:latest`);
+    - Gemini names with no version (`gemini-pro`);
+    - Bedrock names without a provider prefix.
 - **Rewrite config.yaml to config v2** (slice 2 P1b). `environment: dev|pilot|prod` is required. Each backend
   is `backends.<capability>: {kind: <name>, ...settings}`. The old top-level keys are refused with a message
   naming the new place: `audit_dir` -> `backends.audit.dir`, `recorded_dir` -> `backends.llm.recorded_dir`,
@@ -17,6 +28,18 @@
   field with a default no longer un-qualifies agents, and swapping the llm backend does.
 
 ### Added
+- **G4 command withholding** (P5/P6 follow-ups). `channel.clean` now withholds every command a person could
+  paste to change a system: `[command withheld (G4)]` stands in its place.
+  - It covers AWS, gcloud/gsutil/bq, az, azcopy and PowerShell Az, kubectl/oc, helm, terraform/tofu/pulumi,
+    ansible, systemctl, docker/podman, git, gh/glab, psql/mysql/mongosh/redis-cli, SQL write statements,
+    `rm -rf` and `curl | sh`.
+  - It fails closed: a CLI command passes only when it is positively read-only. The WARDEN port was dead code
+    and AWS/K8s-only.
+- `backends.hosts(entries)`: the hosts the configured kinds connect to, as a suggested egress list.
+- **No single-dependency detector.** `llm_judge` runs on any llm kind, a local open-weights model on
+  `openai_compat` included, so the cloud-neutral production detectors are `regex` + `llm_judge`.
+  `bedrock_guardrail` is AWS-only. The approval-summary screen runs without the judge: no agent can be
+  charged there, and the judge already screens the document and tool output.
 - `postgres` store (`pip install hadavin-sdk[pg]`, slice 2 P2): `backends.store: {kind: postgres,
   dsn_secret_name, iam_auth, region}`; compare-and-set in SQL; RDS IAM login with `iam_auth: true`.
 - `hadavin-sdk migrate [--runtime-role R]`: forward-only schema (`store/migrations/0001_core.sql`) applied under
@@ -38,6 +61,12 @@
   (`guardrail_id`, `guardrail_version`, `region`; the PROMPT_ATTACK filter, extra `aws`).
 
 ### Changed
+- P5/P6 follow-ups:
+  - limits are checked again before a tool output is screened, so a reply that spent the budget never pays
+    for a judge call;
+  - the ARN redaction now masks account-less ARNs (`arn:aws:s3:::bucket`) and the `aws-cn` and `aws-us-gov`
+    partitions;
+  - `llm/retry.py` names no vendor: each llm kind says which of its SDK's errors are retryable.
 - `ProviderExhausted` from the model ends the run in `NEEDS_PERSON provider_exhausted` instead of escaping.
 - A provider that refuses the request (`ProviderError`, e.g. a bad key) ends the run in
   `NEEDS_PERSON provider_error`; `ProviderExhausted` is now a `ProviderError`.

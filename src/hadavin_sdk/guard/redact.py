@@ -157,7 +157,8 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         "PRIVKEY",
         re.compile(r"Private-Lines:[ \t]*\d+[ \t]*\r?\n([\s\S](?:(?!\r?\nPrivate-MAC)[\s\S])*)"),
     ),
-    ("ARN", re.compile(r"arn:aws:[a-z0-9\-]*:[a-z0-9\-]*:\d{12}:[^\s\"']+")),
+    # Account-less (`arn:aws:s3:::bucket`) and other partitions (`aws-cn`, `aws-us-gov`) too (lock-in audit row 14).
+    ("ARN", re.compile(r"arn:aws[a-z-]*:[a-z0-9\-]*:[a-z0-9\-]*:(?:\d{12})?:[^\s\"']+")),
     # Three segments (a JWS) to five (a JWE, whose second may be empty): a JWE's last two parts were left in clear
     # (eighth review, 2026-10-01).
     (
