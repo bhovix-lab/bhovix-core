@@ -1,0 +1,46 @@
+"""Contract suites: every check runs against every registered kind of its capability (design §6, §12.6)."""
+
+import importlib
+import pkgutil
+
+import pytest
+
+from tests.contracts import kinds
+from tests.contracts.kinds import KINDS
+
+for _m in pkgutil.iter_modules(kinds.__path__):
+    importlib.import_module(f"{kinds.__name__}.{_m.name}")
+
+
+def _kinds(capability):
+    return pytest.fixture(params=sorted(KINDS[capability]))
+
+
+@_kinds("store")
+def store(request, tmp_path):
+    return KINDS["store"][request.param](tmp_path)
+
+
+@_kinds("audit")
+def audit(request, tmp_path):
+    return KINDS["audit"][request.param](tmp_path)
+
+
+@_kinds("secrets")
+def secrets_factory(request, tmp_path):
+    return lambda seed: KINDS["secrets"][request.param](tmp_path, seed)
+
+
+@_kinds("llm")
+def llm_and_call(request, tmp_path):
+    return KINDS["llm"][request.param](tmp_path)
+
+
+@_kinds("detector")
+def detector(request, tmp_path):
+    return KINDS["detector"][request.param](tmp_path)
+
+
+@_kinds("channel")
+def channel_factory(request, tmp_path):
+    return lambda secret: KINDS["channel"][request.param](tmp_path, secret)

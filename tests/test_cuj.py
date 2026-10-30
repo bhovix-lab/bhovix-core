@@ -7,10 +7,11 @@ import pytest
 
 from hadavin_sdk import cli, evals
 from hadavin_sdk.actions.secrets import FakeSecretProvider
-from hadavin_sdk.app import build, make_llm
+from hadavin_sdk.app import build
 from hadavin_sdk.audit import AuditUnavailable
 from hadavin_sdk.config import load_config
 from hadavin_sdk.guard import EgressRefused, egress_check
+from hadavin_sdk.llm import FakeLLM
 from hadavin_sdk.models import ApprovalDecision, RunState, Verdict
 from hadavin_sdk.registry import load_registry
 from hadavin_sdk.runtime.agent_loop import Unqualified
@@ -36,7 +37,9 @@ class NeverFlagDetector:
 
 def _qualify(cfg_dir):
     cfg = load_config(cfg_dir)
-    return evals.gate(load_registry(cfg), make_llm(cfg), "test-agent")
+    return evals.gate(
+        load_registry(cfg), FakeLLM(cfg.backends.llm.recorded_dir, cfg.routes), "test-agent"
+    )
 
 
 @pytest.fixture
@@ -45,8 +48,8 @@ def app(live_cfg_dir, fake_system):
     clock = Clock()
     a = build(
         live_cfg_dir,
-        FakeSecretProvider({"fixture-token": fake_system.token}),
         ["test-agent"],
+        secrets=FakeSecretProvider({"fixture-token": fake_system.token}),
         clock=clock,
         timeout_s=0.5,
     )
@@ -129,8 +132,8 @@ def test_cuj3_gate_denies_even_when_detector_misses(live_cfg_dir, fake_system):
     assert _qualify(live_cfg_dir).green
     app = build(
         live_cfg_dir,
-        FakeSecretProvider({"fixture-token": fake_system.token}),
         ["test-agent"],
+        secrets=FakeSecretProvider({"fixture-token": fake_system.token}),
         detector=NeverFlagDetector(),
     )
     doc = (app.config.inputs_dir / "injected.txt").read_bytes()
@@ -146,7 +149,11 @@ def test_cuj4_gate_green_red_and_unqualified_start(live_cfg_dir, fake_system, ca
     assert "10/10" in capsys.readouterr().out
     # make one recorded answer wrong in the tmp copy -> 9/10 < 1.0
     cfg = load_config(live_cfg_dir)
-    rec = next(p for p in sorted(cfg.recorded_dir.glob("*.json")) if "Desk lamp" in p.read_text())
+    rec = next(
+        p
+        for p in sorted(cfg.backends.llm.recorded_dir.glob("*.json"))
+        if "Desk lamp" in p.read_text()
+    )
     data = json.loads(rec.read_text(encoding="utf-8"))
     data["tool_calls"][0]["input"]["amount"] = "99.99"
     rec.write_text(json.dumps(data), encoding="utf-8")
@@ -156,7 +163,9 @@ def test_cuj4_gate_green_red_and_unqualified_start(live_cfg_dir, fake_system, ca
     prompt.write_text(prompt.read_text(encoding="utf-8") + "New rule.\n", encoding="utf-8")
     with pytest.raises(Unqualified):
         build(
-            live_cfg_dir, FakeSecretProvider({"fixture-token": fake_system.token}), ["test-agent"]
+            live_cfg_dir,
+            ["test-agent"],
+            secrets=FakeSecretProvider({"fixture-token": fake_system.token}),
         )
 
 

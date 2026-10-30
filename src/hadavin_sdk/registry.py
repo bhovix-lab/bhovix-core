@@ -85,7 +85,7 @@ class Registry:
                 "agent": dump(agent),
                 "route": dump(self.config.routes[agent.model_route]),
                 "actions": [dump(self.contracts[a]) for a in sorted(agent.scope_allowed)],
-                "llm_backend": self.config.backends.llm,
+                "llm_backend": self.config.backends.llm.kind,
             }
         )
 

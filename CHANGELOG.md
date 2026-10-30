@@ -3,6 +3,14 @@
 ## Unreleased
 
 ### Upgrade steps
+- **Rewrite config.yaml to config v2** (slice 2 P1b). `environment: dev|pilot|prod` is required. Each backend
+  is `backends.<capability>: {kind: <name>, ...settings}`. The old top-level keys are refused with a message
+  naming the new place: `audit_dir` -> `backends.audit.dir`, `recorded_dir` -> `backends.llm.recorded_dir`,
+  `detector_threshold` -> `backends.detector: [{kind: regex, threshold}]`, `region` -> each AWS kind's
+  `region`, `slack` -> `backends.channel`. Start-up now refuses dev-only kinds outside `dev`, a secret name used
+  by both a backend and an action, and any secret that cannot be read.
+- `app.build(config_dir, agents, *, secrets=None, ...)`: `secrets` is now a keyword; `make_llm`,
+  `make_detector` and `make_channel` are gone (backends are built from the table in `hadavin_sdk.backends`).
 - **Re-gate every agent once** (slice 2 P1a). `config_hash` now hashes with `exclude_defaults` and includes the
   llm backend kind, so every stored green gate run stops matching. Run `hadavin-sdk gate <agent>` for each agent
   before starting the runtime; until then start-up raises `Unqualified`. After this one re-gate, adding an optional

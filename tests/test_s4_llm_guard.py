@@ -25,7 +25,7 @@ def cfg(cfg_dir):
 
 @pytest.fixture
 def llm(cfg):
-    return FakeLLM(cfg.recorded_dir, cfg.routes)
+    return FakeLLM(cfg.backends.llm.recorded_dir, cfg.routes)
 
 
 def _doc(cfg, name):
