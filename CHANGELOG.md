@@ -22,3 +22,9 @@
   `NotFound`; `Limits.blocked` no longer writes a zero-spend row.
 - The executor calls a heartbeat before every HTTP attempt, so long retries do not look stuck.
 - `Verdict.score` is bounded to 0..1; a detector failure is logged with its cause (still fails closed).
+
+### Added (slice 2 P4, `slice2-unverified` until the P9 live run)
+- `backends.secrets: {kind: aws_secrets_manager, region, ttl_s: 300}`: values cached for `ttl_s` (0 = no
+  cache), a missing secret is a `ConfigError` at the start-up probe, values are never logged.
+- `backends.secrets: {kind: env, prefix: HADAVIN_SECRET_}` (dev only): `fixture-token` reads
+  `HADAVIN_SECRET_FIXTURE_TOKEN`.
