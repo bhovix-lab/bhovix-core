@@ -6,6 +6,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Protocol
 
+from hadavin_sdk.errors import ConfigError
 from hadavin_sdk.models import (
     ApprovalDecision,
     ApprovalRequest,
@@ -22,6 +23,10 @@ from hadavin_sdk.models import (
 
 class StaleState(RuntimeError):
     """Compare-and-set failed: the row changed since it was read."""
+
+
+class StoreUnavailable(ConfigError):
+    """The store cannot be reached (`tick` exits 3; nothing was changed)."""
 
 
 class NotFound(KeyError):

@@ -61,4 +61,4 @@ def detector(request, tmp_path):
 
 @_kinds("channel")
 def channel_factory(request, tmp_path):
-    return lambda secret: KINDS["channel"][request.param](tmp_path, secret)
+    return lambda secret: _built(request, KINDS["channel"][request.param](tmp_path, secret))

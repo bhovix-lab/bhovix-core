@@ -35,7 +35,7 @@ from hadavin_sdk.models import (
     TickState,
     now,
 )
-from hadavin_sdk.store.protocol import NotFound, StaleState
+from hadavin_sdk.store.protocol import NotFound, StaleState, StoreUnavailable
 
 _LOG = logging.getLogger("hadavin_sdk.store")
 
@@ -106,7 +106,9 @@ def build(settings, deps) -> PostgresStore:
         )
     except psycopg.OperationalError as exc:
         # The class only: driver messages can carry the host and user.
-        raise ConfigError(f"store postgres: cannot connect ({exc.__class__.__name__})") from None
+        raise StoreUnavailable(
+            f"store postgres: cannot connect ({exc.__class__.__name__})"
+        ) from None
     return PostgresStore(conn)
 
 

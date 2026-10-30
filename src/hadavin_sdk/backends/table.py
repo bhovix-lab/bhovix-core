@@ -122,6 +122,14 @@ class AwsSecretsManagerSettings(KindSettings):
     ttl_s: float = Field(default=300, ge=0)  # 0 = no cache
 
 
+class SlackSettings(KindSettings):
+    channel_id: str
+    signing_secret_name: str
+    bot_token_secret_name: str
+    api_base: str = "https://slack.com/api"
+    timeout_s: float = Field(default=10.0, gt=0, le=60)
+
+
 class FakeChannelSettings(KindSettings):
     signing_secret_name: str | None = None
 
@@ -168,7 +176,12 @@ TABLE: dict[str, dict[str, Entry]] = {
         "gemini": Entry(GeminiSettings, "hadavin_sdk.llm.gemini:make"),
     },
     "detector": {"regex": Entry(RegexSettings, f"{_BUILTIN}:regex_detector")},
-    "channel": {"fake": Entry(FakeChannelSettings, f"{_BUILTIN}:fake_channel")},
+    "channel": {
+        "fake": Entry(FakeChannelSettings, f"{_BUILTIN}:fake_channel"),
+        "slack": Entry(
+            SlackSettings, "hadavin_sdk.approvals.slack_channel:build", status=_UNVERIFIED
+        ),
+    },
 }
 
 # The Deps fields a factory of each capability may see (besides its own bound `resolve`).

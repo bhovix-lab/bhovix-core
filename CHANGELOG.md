@@ -17,6 +17,21 @@
   field with a default no longer un-qualifies agents, and swapping the llm backend does.
 
 ### Added
+- `hadavin-sdk tick` (slice 2 P7, v5 contract): one pass of isolated steps (`sweep`, `reconcile`, `stuck`,
+  `checkpoint`, then `heartbeat` last); a failing step is logged and recorded in `tick_state` and the others
+  still run. Exit 0 ok, 1 a step failed, 2 config error, 3 store unreachable. Later steps are appended to
+  `runtime.tick.STEPS`.
+- `slack` approval channel (`backends.channel: {kind: slack, channel_id, signing_secret_name,
+  bot_token_secret_name}`) and `approvals/receiver.py`: verified clicks are recorded only; `tick` runs the plan.
+- Migration `0003_approvals_tick.sql`: `approval_requests.sent_at` and `channel_ref` (a failed send is resent
+  by `tick`), one decision per approval step, an exact month spend counter, the kill switch row (a missing row
+  reads as ON), `tick_state`.
+
+### Changed (slice 2 P7)
+- Postgres TLS: `sslmode` setting; `require` by default for non-local hosts and always with `iam_auth`; a
+  runtime DSN with a password is refused with `iam_auth`.
+- The runtime role gets SELECT, INSERT only on `approval_decisions`, `dead_letters`, `gate_decisions`.
+- Gate decisions are written once per run; a run stuck in `RECEIVED` can go to `NEEDS_PERSON`.
 - `postgres` store (`pip install hadavin-sdk[pg]`, slice 2 P2): `backends.store: {kind: postgres,
   dsn_secret_name, iam_auth, region}`; compare-and-set in SQL; RDS IAM login with `iam_auth: true`.
 - `hadavin-sdk migrate [--runtime-role R]`: forward-only schema (`store/migrations/0001_core.sql`) applied under

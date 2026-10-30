@@ -12,5 +12,7 @@ reviews:
   auto_review:
     enabled: true
     drafts: false
+    # One review when the PR opens; later pushes (the single fix batch) do not re-trigger it.
+    auto_incremental_review: false
 chat:
   auto_reply: true
