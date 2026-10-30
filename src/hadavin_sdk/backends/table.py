@@ -95,6 +95,20 @@ class LocalDirSettings(KindSettings):
     dir: Path
 
 
+class PostgresSettings(KindSettings):
+    dsn_secret_name: str
+    iam_auth: bool = (
+        False  # RDS IAM login: no database password anywhere (needs the `aws` extra too)
+    )
+    region: str | None = None
+
+    @model_validator(mode="after")
+    def _iam_needs_region(self) -> PostgresSettings:
+        if self.iam_auth and not self.region:
+            raise ValueError("iam_auth needs region (and pip install hadavin-sdk[aws])")
+        return self
+
+
 class EnvSecretsSettings(KindSettings):
     prefix: str = Field(default="HADAVIN_SECRET_", min_length=1)
 
@@ -134,7 +148,12 @@ TABLE: dict[str, dict[str, Entry]] = {
             status=_UNVERIFIED,
         ),
     },
-    "store": {"memory": Entry(KindSettings, f"{_BUILTIN}:memory_store")},
+    "store": {
+        "memory": Entry(KindSettings, f"{_BUILTIN}:memory_store"),
+        "postgres": Entry(
+            PostgresSettings, "hadavin_sdk.store.postgres:build", extra="pg", status=_UNVERIFIED
+        ),
+    },
     "audit": {"local_dir": Entry(LocalDirSettings, f"{_BUILTIN}:local_dir_audit")},
     "llm": {
         "fake": Entry(FakeLLMSettings, f"{_BUILTIN}:fake_llm"),
