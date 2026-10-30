@@ -6,6 +6,7 @@ by the app wiring (``hadavin_sdk.app``). Approvals are injected the same way.
 
 from __future__ import annotations
 
+import inspect
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -36,6 +37,15 @@ from hadavin_sdk.store.protocol import Store
 
 S = RunState
 _ASK = "Process the attached request document."
+
+
+def _accepts(fn: Callable[..., Any], name: str) -> bool:
+    """True if `fn` takes a keyword `name` (or **kwargs). Unknown signatures (some builtins) count as no."""
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(p.name == name or p.kind is inspect.Parameter.VAR_KEYWORD for p in params)
 
 
 class Unqualified(RuntimeError):
@@ -310,9 +320,10 @@ class Runtime:
             return self._to(run, S.NEEDS_PERSON, "audit_unavailable")
         run = self._to(run, S.EXECUTING)
         try:
-            result = self.hooks.execute(
-                plan, decision, approval, heartbeat=lambda: self.store.touch(run.run_id)
-            )
+            extra = {}
+            if _accepts(self.hooks.execute, "heartbeat"):  # older three-argument hooks still work
+                extra["heartbeat"] = lambda: self.store.touch(run.run_id)
+            result = self.hooks.execute(plan, decision, approval, **extra)
         except Exception:  # noqa: BLE001 - the side effect may have happened: never leave EXECUTING
             result = RunResult(outcome="unknown", error_code="executor_error")
         self._note(

@@ -224,3 +224,19 @@ def test_config_hash_ignores_defaulted_fields_and_sees_backend_swaps(cfg_dir):
         update={"backends": reg.config.backends.model_copy(update={"llm": "bedrock"})}
     )
     assert load_registry(swapped).config_hash("test-agent") != base
+
+
+def test_three_argument_execute_hook_still_works(cfg_dir):
+    """CodeRabbit on #7: hooks written before the heartbeat keyword keep working."""
+    from hadavin_sdk.models import RunResult
+    from hadavin_sdk.runtime.agent_loop import Hooks
+
+    def old_execute(plan, decision, approval):
+        return RunResult(outcome="succeeded", external_ref="rec-001")
+
+    rt, cfg = build(
+        cfg_dir,
+        Hooks(request_approval=lambda *a: None, execute=old_execute, verify=lambda p, r: True),
+    )
+    run = rt.handle("test-agent", "svc:test-agent", (cfg.inputs_dir / "create.txt").read_bytes())
+    assert rt.execute(run.run_id).state == S.SUCCEEDED
