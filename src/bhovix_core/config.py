@@ -54,7 +54,7 @@ class Backends(_Strict):
 
 
 class System(_Strict):
-    base_url: str
+    base_url: str = Field(pattern=r"^https?://")
 
 
 class SlackConfig(_Strict):

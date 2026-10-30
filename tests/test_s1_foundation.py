@@ -180,3 +180,9 @@ def test_spend_day_and_month_totals():
     assert day == Decimal("0.50")
     _, month2 = store.add_spend("a", today - timedelta(days=40), Decimal(5))
     assert month == Decimal("0.50") and month2 == Decimal(5)
+
+
+def test_bad_system_url_scheme(cfg_dir):
+    _edit(cfg_dir, lambda d: d["systems"]["fixture-records"].update(base_url="file:///etc"))
+    with pytest.raises(ConfigError):
+        load_config(cfg_dir)

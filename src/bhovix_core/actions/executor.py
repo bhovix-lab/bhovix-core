@@ -42,15 +42,18 @@ class Executor:
 
         def call(method: str, path: str, body: Any = None, headers: dict | None = None):
             url = base + path
+            if not url.startswith(("http://", "https://")):
+                raise EgressRefused("only http and https are allowed")
             egress_check(url, cfg.egress_hosts)
             data = None if body is None else json.dumps(body).encode("utf-8")
-            req = urllib.request.Request(url, data=data, method=method)  # noqa: S310 - egress-checked
+            req = urllib.request.Request(url, data=data, method=method)  # noqa: S310 - scheme checked
             req.add_header("Authorization", f"Bearer {token}")
             req.add_header("Content-Type", "application/json")
             for k, v in (headers or {}).items():
                 req.add_header(k, v)
             try:
-                with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:  # noqa: S310
+                # Scheme limited to http/https above and host allow-listed by egress_check.
+                with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:  # noqa: S310  # nosec B310
                     raw = resp.read()
                     return resp.status, json.loads(raw) if raw else None
             except urllib.error.HTTPError as exc:
