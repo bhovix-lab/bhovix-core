@@ -17,7 +17,7 @@ import sys
 
 from hadavin_sdk import evals
 from hadavin_sdk.audit import AuditUnavailable
-from hadavin_sdk.backends import make
+from hadavin_sdk.backends import make, platform_secrets
 from hadavin_sdk.config import load_config
 from hadavin_sdk.limits import Limits
 from hadavin_sdk.registry import load_registry
@@ -65,6 +65,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
     secrets = make("secrets", b.secrets)
+    # Same start-up probe as app.build: a missing DSN is a clean ConfigError, not a KeyError mid-build.
+    platform_secrets.check(secrets, [b.store, b.audit], set())
     store = make("store", b.store, secrets)
     audit = make("audit", b.audit, secrets, store=store)
     return kill_switch(Limits(store, audit, reg), args.action, args.by)
