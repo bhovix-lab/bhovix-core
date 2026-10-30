@@ -65,6 +65,10 @@ def _error_code(exc: BaseException) -> str:
     return str(response.get("Error", {}).get("Code", "")) if isinstance(response, dict) else ""
 
 
+# A peer closing the TLS connection mid-handshake or mid-read: a dropped connection, worth another attempt.
+_TLS_DROPS = (ssl.SSLEOFError, ssl.SSLZeroReturnError)
+
+
 def _chain(exc: BaseException) -> list[BaseException]:
     """The error and what it wraps (urllib's ``reason``, ``__cause__``, ``__context__``), at most 8 deep."""
     seen: list[BaseException] = []
@@ -78,8 +82,8 @@ def _chain(exc: BaseException) -> list[BaseException]:
 
 
 def transient(exc: BaseException) -> bool:
-    if any(isinstance(e, ssl.SSLError) for e in _chain(exc)):
-        return False  # a certificate problem fails the same way every time
+    if any(isinstance(e, ssl.SSLError) and not isinstance(e, _TLS_DROPS) for e in _chain(exc)):
+        return False  # a certificate or protocol problem fails the same way every time
     if _error_code(exc) in _RETRY_CODES:
         return True
     status = _status(exc)

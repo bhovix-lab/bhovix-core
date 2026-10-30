@@ -97,6 +97,10 @@ class GeminiLLM(NetworkLLM):
                 return Answer(text="", calls=[], tokens=tokens, stop="SAFETY")
             raise ValueError("gemini answered with no candidates")  # a ProviderError, never a guess
         candidate = resp["candidates"][0]
+        if (
+            candidate.get("finishReason") == "MALFORMED_FUNCTION_CALL"
+        ):  # the model failed, it did not decide
+            raise ValueError("gemini answered with a malformed function call")
         parts = (candidate.get("content") or {}).get("parts") or []
         return Answer(
             # Thought parts are the model's working, never its answer.

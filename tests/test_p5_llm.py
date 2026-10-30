@@ -4,6 +4,7 @@ import json
 import ssl
 import urllib.error
 from email.message import Message
+from urllib.request import ProxyHandler
 
 import pytest
 import yaml
@@ -109,6 +110,18 @@ def test_a_certificate_failure_is_not_retried_and_408_is():
     wrapped = urllib.error.URLError(ssl.SSLCertVerificationError("bad certificate"))
     assert not transient(wrapped)
     assert transient(_Status(408))
+    assert transient(urllib.error.URLError(ssl.SSLEOFError("peer closed")))  # a dropped connection
+
+
+def test_a_malformed_gemini_function_call_is_a_provider_error():
+    wire = GeminiWire()
+    try:
+        fx = wire.scenario("text")
+        fx["body"]["candidates"][0]["finishReason"] = "MALFORMED_FUNCTION_CALL"
+        with pytest.raises(ProviderError):
+            wire.serve(fx).chat(**CALL)
+    finally:
+        wire.close()
 
 
 def test_retry_after_is_honoured_up_to_the_cap():
@@ -191,6 +204,23 @@ def test_no_json_in_text_asks_once_more_and_charges_both(openai_wire):
     reply = llm.chat(**CALL, output_schema=SCHEMA)
     assert len(openai_wire.requests) == 2 and reply.tool_calls == []
     assert (reply.input_tokens, reply.output_tokens) == (600, 14)
+
+
+@pytest.mark.parametrize("finish", ["length", "content_filter"])
+def test_a_cut_off_or_refused_answer_is_not_asked_again(openai_wire, finish):
+    fx = _text(openai_wire, "partial")
+    fx["body"]["choices"][0]["finish_reason"] = finish
+    reply = openai_wire.serve(fx, _text(openai_wire, '{"total": "1"}')).chat(
+        **CALL, output_schema=SCHEMA
+    )
+    assert len(openai_wire.requests) == 1 and reply.tool_calls == []
+
+
+def test_a_loopback_model_is_reached_without_a_proxy():
+    from hadavin_sdk.llm import common
+
+    # An empty ProxyHandler replaces the environment one and registers no proxy route at all.
+    assert not any(isinstance(h, ProxyHandler) for h in common._LOCAL_OPENER.handlers)
 
 
 def test_reasoning_models_get_max_completion_tokens(openai_wire):
