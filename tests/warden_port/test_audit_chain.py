@@ -294,7 +294,15 @@ def test_the_backend_table_builds_the_kms_signer_and_the_anchor_from_config(monk
 
     def fake_client(service, **kw):
         c = kw["config"]  # bounded: checkpoints are signed and anchored inline
-        made.append((service, kw.get("region_name"), c.connect_timeout, c.read_timeout))
+        made.append(
+            (
+                service,
+                kw.get("region_name"),
+                c.connect_timeout,
+                c.read_timeout,
+                c.retries["total_max_attempts"],
+            )
+        )
         return client if service == "kms" else real_client(service, **kw)
 
     monkeypatch.setattr(boto3, "client", fake_client)
@@ -310,7 +318,8 @@ def test_the_backend_table_builds_the_kms_signer_and_the_anchor_from_config(monk
         "GOVERNANCE",
         timedelta(days=30),
     )
-    assert made == [("kms", REGION, 3, 5), ("s3", REGION, 3, 5)]
+    bounded = (3, 5, 2)  # timeouts, and at most 2 requests in total
+    assert made == [("kms", REGION, *bounded), ("s3", REGION, *bounded)]
     with pytest.raises(ConfigError, match="needs a signer"):
         make("audit", ChainSettings(kind="chain", anchor=anchor), store=store)
 

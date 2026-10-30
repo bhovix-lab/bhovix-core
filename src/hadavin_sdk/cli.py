@@ -2,7 +2,7 @@
 
   hadavin-sdk [--config DIR] gate <agent>                exit 0 when green, 1 when below the threshold
   hadavin-sdk [--config DIR] limits stop|reset --by WHO  refused until a shared store exists (exit 2)
-  hadavin-sdk [--config DIR] audit verify                exit 0 intact, 1 not intact, 3 cannot be read
+  hadavin-sdk [--config DIR] audit verify                exit 0 intact, 1 not, 2 refused, 3 unreadable
 
 ``--config`` goes before the subcommand and overrides ``HADAVIN_CONFIG_DIR``. From a source checkout use ``uv run python -m hadavin_sdk.cli`` so
 the current folder (and its check modules) is importable.

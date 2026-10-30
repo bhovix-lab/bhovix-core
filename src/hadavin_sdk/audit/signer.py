@@ -125,7 +125,7 @@ def build_kms(settings, deps) -> KmsSigner:
     from botocore.config import Config
 
     # Checkpoints are signed inline every N audit rows: bounded, not botocore's 60 s defaults.
-    config = Config(connect_timeout=3, read_timeout=5, retries={"max_attempts": 2})
+    config = Config(connect_timeout=3, read_timeout=5, retries={"total_max_attempts": 2})
     client = boto3.client("kms", region_name=settings.region, config=config)
     return probe(KmsSigner(settings.key_id, client), "signer aws_kms")
 

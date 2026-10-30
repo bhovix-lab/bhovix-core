@@ -61,7 +61,7 @@ def build(settings) -> S3Anchor:
     from botocore.config import Config
 
     # Anchors are written inline every N audit rows: a slow S3 must cost seconds, not botocore's 60 s defaults.
-    config = Config(connect_timeout=3, read_timeout=5, retries={"max_attempts": 2})
+    config = Config(connect_timeout=3, read_timeout=5, retries={"total_max_attempts": 2})
     return S3Anchor(
         settings.bucket,
         boto3.client("s3", region_name=settings.region, config=config),
