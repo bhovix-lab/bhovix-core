@@ -17,6 +17,12 @@
   field with a default no longer un-qualifies agents, and swapping the llm backend does.
 
 ### Added
+- `postgres` store (`pip install hadavin-sdk[pg]`, slice 2 P2): `backends.store: {kind: postgres,
+  dsn_secret_name, iam_auth, region}`; compare-and-set in SQL; RDS IAM login with `iam_auth: true`.
+- `hadavin-sdk migrate [--runtime-role R]`: forward-only schema (`store/migrations/0001_core.sql`) applied under
+  an advisory lock with the migration role's DSN from `HADAVIN_MIGRATE_DSN`. Rollback = restore the snapshot
+  taken before migrating.
+- `hadavin-sdk limits stop|reset` now works on a shared (postgres) store.
 - llm kinds (slice 2 P5, all `slice2-unverified` until the P9 live run): `anthropic` with `platform: api |
   vertex | foundry` (extra `anthropic`), `bedrock` through Converse (extra `aws`), `openai_compat` (OpenAI,
   Groq, OpenRouter, a local Ollama) and `gemini` over stdlib HTTP. Each has `call_timeout_s` (60) and
@@ -42,3 +48,19 @@
   `NotFound`; `Limits.blocked` no longer writes a zero-spend row.
 - The executor calls a heartbeat before every HTTP attempt, so long retries do not look stuck.
 - `Verdict.score` is bounded to 0..1; a detector failure is logged with its cause (still fails closed).
+
+### Added (slice 2 P3, every kind `slice2-unverified` until the P9 live run)
+- `backends.audit: {kind: chain}`: WARDEN's hash-chained, append-only audit in the store's database, signed
+  checkpoints every `checkpoint_every` rows, and an optional `anchor: {kind: s3_object_lock, bucket, region}`
+  (GOVERNANCE, 1 day by default). `hadavin-sdk audit verify` exits 0 intact, 1 not intact,
+  2 refused (a memory store lives in one process), 3 unreadable.
+- `backends.signer`: `none` (default), `ed25519_local`, `aws_kms`. Start-up signs a probe message.
+- Environment table: prod refuses `ed25519_local` and a chain without an anchor that has `retention_ack: true`;
+  COMPLIANCE mode only in prod with `retention_ack`.
+- `store/migrations/0002_audit_chain.sql` (applied by `hadavin-sdk migrate` with the postgres store).
+
+### Added (slice 2 P4, `slice2-unverified` until the P9 live run)
+- `backends.secrets: {kind: aws_secrets_manager, region, ttl_s: 300}`: values cached for `ttl_s` (0 = no
+  cache), a missing secret is a `ConfigError` at the start-up probe, values are never logged.
+- `backends.secrets: {kind: env, prefix: HADAVIN_SECRET_}` (dev only): `fixture-token` reads
+  `HADAVIN_SECRET_FIXTURE_TOKEN`.

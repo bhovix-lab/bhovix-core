@@ -14,7 +14,7 @@ import yaml
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from hadavin_sdk.backends.table import DEFAULTS, DEV_ONLY, TABLE, KindSettings
+from hadavin_sdk.backends.table import DEFAULTS, DEV_ONLY, NOT_PROD, TABLE, KindSettings
 from hadavin_sdk.errors import ConfigError
 
 __all__ = ["Backends", "Config", "ConfigError", "Route", "confined", "load_config", "url_allowed"]
@@ -46,6 +46,7 @@ class Backends(_Strict):
     """One validated settings model per capability (built by `parse_backends`, never from raw YAML)."""
 
     secrets: KindSettings
+    signer: KindSettings
     store: KindSettings
     audit: KindSettings
     llm: KindSettings
@@ -182,7 +183,27 @@ class Config(_Strict):
                 raise ValueError(
                     f"environment {self.environment}: refused outside dev: {', '.join(refused)}"
                 )
+        if refused := _anchor_refusals(self.environment, self.backends):
+            raise ValueError(f"environment {self.environment}: refused: {', '.join(refused)}")
         return self
+
+
+def _anchor_refusals(environment: str, b: Backends) -> list[str]:
+    """Environment table (design 4.6): prod needs a non-local signer and an anchor whose retention the client
+    agreed (`retention_ack`); COMPLIANCE mode (undeletable even by the account root) only then."""
+    anchor = getattr(b.audit, "anchor", None)
+    refused = []
+    if (
+        anchor is not None
+        and anchor.mode == "COMPLIANCE"
+        and not (environment == "prod" and anchor.retention_ack)
+    ):
+        refused.append("anchor mode COMPLIANCE outside prod or without retention_ack")
+    if environment == "prod":
+        refused += [f"{c}: {s.kind}" for c, s in b.entries() if (c, s.kind) in NOT_PROD]
+        if b.audit.kind == "chain" and (anchor is None or not anchor.retention_ack):
+            refused.append("audit chain without an anchor with retention_ack")
+    return refused
 
 
 def _read_yaml(path: Path) -> dict:

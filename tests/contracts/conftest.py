@@ -1,6 +1,7 @@
 """Contract suites: every check runs against every registered kind of its capability (design §6, §12.6)."""
 
 import importlib
+import inspect
 import pkgutil
 
 import pytest
@@ -16,14 +17,23 @@ def _kinds(capability):
     return pytest.fixture(params=sorted(KINDS[capability]))
 
 
+def _built(request, made):
+    """A kind function may return its backend, or yield it and clean up after the test."""
+    if not inspect.isgenerator(made):
+        return made
+    value = next(made)
+    request.addfinalizer(lambda: next(made, None))
+    return value
+
+
 @_kinds("store")
 def store(request, tmp_path):
-    return KINDS["store"][request.param](tmp_path)
+    return _built(request, KINDS["store"][request.param](tmp_path))
 
 
 @_kinds("audit")
 def audit(request, tmp_path):
-    return KINDS["audit"][request.param](tmp_path)
+    return _built(request, KINDS["audit"][request.param](tmp_path))
 
 
 @_kinds("secrets")

@@ -13,7 +13,7 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 def now() -> datetime:
@@ -106,8 +106,17 @@ class Plan(Shape):
     expected_outcome: str
     created_at: datetime = Field(default_factory=now)
 
+    @field_validator("created_at")
+    @classmethod
+    def _utc(cls, value: datetime) -> datetime:
+        """The hash covers created_at: one instant must serialise one way, whatever store returned it."""
+        if value.utcoffset() is None:
+            raise ValueError("created_at must be timezone-aware")
+        return value.astimezone(UTC)
+
     def hash(self) -> str:
-        return sha256_hex(self)
+        # Normalised here too: model_copy(update=...) and attribute assignment skip the validator.
+        return sha256_hex(self.model_copy(update={"created_at": self._utc(self.created_at)}))
 
 
 class GateDecision(Shape):

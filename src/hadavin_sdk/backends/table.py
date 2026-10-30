@@ -107,6 +107,56 @@ class LocalDirSettings(KindSettings):
     dir: Path
 
 
+class PostgresSettings(KindSettings):
+    dsn_secret_name: str
+    iam_auth: bool = (
+        False  # RDS IAM login: no database password anywhere (needs the `aws` extra too)
+    )
+    region: str | None = None
+
+    @model_validator(mode="after")
+    def _iam_needs_region(self) -> PostgresSettings:
+        if self.iam_auth and not self.region:
+            raise ValueError("iam_auth needs region (and pip install hadavin-sdk[aws])")
+        return self
+
+
+class EnvSecretsSettings(KindSettings):
+    prefix: str = Field(default="HADAVIN_SECRET_", min_length=1)
+
+
+class AwsSecretsManagerSettings(KindSettings):
+    region: str
+    ttl_s: float = Field(default=300, ge=0)  # 0 = no cache
+
+
+class S3ObjectLockSettings(KindSettings):
+    """The chain's anchor. COMPLIANCE only in prod with `retention_ack` (the client agreed retention in
+    writing); prod also needs the ack for GOVERNANCE (config.py, environment table)."""
+
+    kind: Literal["s3_object_lock"]
+    bucket: str
+    region: str
+    mode: Literal["GOVERNANCE", "COMPLIANCE"] = "GOVERNANCE"
+    retain_days: int = Field(default=1, ge=1)
+    retention_ack: bool = False
+
+
+class ChainSettings(KindSettings):
+    anchor: S3ObjectLockSettings | None = None
+    checkpoint_every: int = Field(default=100, ge=1)
+
+
+class Ed25519LocalSettings(KindSettings):
+    private_key_path: Path
+    passphrase_secret_name: str | None = None
+
+
+class AwsKmsSettings(KindSettings):
+    key_id: str
+    region: str
+
+
 class FakeChannelSettings(KindSettings):
     signing_secret_name: str | None = None
 
@@ -116,15 +166,47 @@ class Entry:
     settings: type[KindSettings]
     factory: str  # "module:function", called as function(settings, deps)
     extra: str | None = None  # pip extra the factory module needs: hadavin-sdk[<extra>]
+    # Design 0: "have" (slice 1), "slice2" (suite + one live run), "slice2-unverified" (suite on fakes only).
+    status: str = "have"
 
 
 _BUILTIN = "hadavin_sdk.backends.builtin"
+_UNVERIFIED = "slice2-unverified"
+_SIGNER = "hadavin_sdk.audit.signer"
 
 # Build order (design §4.2): each capability may use only what is built before it, as ALLOWED says.
 TABLE: dict[str, dict[str, Entry]] = {
-    "secrets": {"fake": Entry(KindSettings, f"{_BUILTIN}:fake_secrets")},
-    "store": {"memory": Entry(KindSettings, f"{_BUILTIN}:memory_store")},
-    "audit": {"local_dir": Entry(LocalDirSettings, f"{_BUILTIN}:local_dir_audit")},
+    "secrets": {
+        "fake": Entry(KindSettings, f"{_BUILTIN}:fake_secrets"),
+        "env": Entry(
+            EnvSecretsSettings, "hadavin_sdk.actions.secrets_env:build", status=_UNVERIFIED
+        ),
+        "aws_secrets_manager": Entry(
+            AwsSecretsManagerSettings,
+            "hadavin_sdk.actions.secrets_aws:build",
+            extra="aws",
+            status=_UNVERIFIED,
+        ),
+    },
+    "signer": {
+        "none": Entry(KindSettings, f"{_BUILTIN}:no_signer"),
+        "ed25519_local": Entry(
+            Ed25519LocalSettings, f"{_SIGNER}:build_local", extra="signer", status=_UNVERIFIED
+        ),
+        "aws_kms": Entry(AwsKmsSettings, f"{_SIGNER}:build_kms", extra="aws", status=_UNVERIFIED),
+    },
+    "store": {
+        "memory": Entry(KindSettings, f"{_BUILTIN}:memory_store"),
+        "postgres": Entry(
+            PostgresSettings, "hadavin_sdk.store.postgres:build", extra="pg", status=_UNVERIFIED
+        ),
+    },
+    "audit": {
+        "local_dir": Entry(LocalDirSettings, f"{_BUILTIN}:local_dir_audit"),
+        "chain": Entry(
+            ChainSettings, "hadavin_sdk.audit.chain:build", extra="signer", status=_UNVERIFIED
+        ),
+    },
     "llm": {
         "fake": Entry(FakeLLMSettings, f"{_BUILTIN}:fake_llm"),
         # Every kind below is slice2-unverified until its P9 live run (design 12.1).
@@ -147,8 +229,9 @@ TABLE: dict[str, dict[str, Entry]] = {
 # The Deps fields a factory of each capability may see (besides its own bound `resolve`).
 ALLOWED: dict[str, frozenset[str]] = {
     "secrets": frozenset(),
+    "signer": frozenset(),
     "store": frozenset(),
-    "audit": frozenset({"store"}),
+    "audit": frozenset({"store", "signer"}),
     "llm": frozenset({"routes"}),
     "detector": frozenset({"llm"}),
     "channel": frozenset({"store"}),
@@ -157,6 +240,7 @@ ALLOWED: dict[str, frozenset[str]] = {
 # Capabilities a config may leave out, and the kind they get.
 DEFAULTS: dict[str, str] = {
     "secrets": "fake",
+    "signer": "none",
     "store": "memory",
     "detector": "regex",
     "channel": "fake",
@@ -174,3 +258,5 @@ DEV_ONLY: frozenset[tuple[str, str]] = frozenset(
         ("audit", "local_dir"),
     }
 )
+# Kinds refused only in `prod` (design 4.6); the anchor rules are in config.py.
+NOT_PROD: frozenset[tuple[str, str]] = frozenset({("signer", "ed25519_local")})
