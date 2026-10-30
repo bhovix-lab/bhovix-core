@@ -31,7 +31,13 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("SORTCODE", re.compile(r"(?i)\bsort\s*code\b\W{0,3}(\d{2}-\d{2}-\d{2}|\d{6})\b")),
     ("TRANSIT", re.compile(r"(?i)\btransit\b(?:\s*(?:no\.?|number|#))?\W{0,3}(\d{5}-?\d{3})\b")),
     ("ACCOUNT", re.compile(r"(?i)\b(?:account|acct)\s*(?:no\.?|number|#)?\W{0,3}(\d{6,12})\b")),
-    ("PHONE", re.compile(r"(?<![\w.\-])\+?\d(?:[\d \-]){8,14}\d(?![\w.])")),
+    # Date guard from WARDEN redaction.py:184: an ISO date (2026-10-30) is never a phone number.
+    (
+        "PHONE",
+        re.compile(
+            r"(?<![\w.\-])(?!\d{4}-\d\d-\d\d)\+?\d(?:(?!\d{4}-\d\d-\d\d)[\d \-]){8,14}\d(?![\w.])"
+        ),
+    ),
     (
         "SECRET",
         re.compile(
