@@ -1,0 +1,13 @@
+{
+  "input_tokens": 500,
+  "output_tokens": 50,
+  "stop_reason": "tool_use",
+  "tool_calls": [
+    {
+      "input": {
+        "id": "rec-001"
+      },
+      "name": "lookup_record"
+    }
+  ]
+}

@@ -9,8 +9,16 @@ license-files = ["LICENSE"]
 authors = [{ name = "Hadavin" }]
 # PyPI refuses any upload carrying this classifier.
 classifiers = ["Private :: Do Not Upload"]
-# The core carries no vendor SDK by default; each backend is an optional extra added when a build needs it.
-dependencies = []
+# Base: typed models, settings and YAML config only. No vendor SDK; each cloud backend is an optional extra added
+# when a build needs it. Pins are at least 7 days old (Dependabot cooldown).
+dependencies = [
+    "pydantic==2.14.1",
+    "pydantic-settings==2.16.1",
+    "pyyaml==6.0.3",
+]
+
+[project.scripts]
+hadavin-sdk = "hadavin_sdk.cli:main"
 
 [dependency-groups]
 dev = ["pytest==9.1.1", "ruff==0.17.1"]
@@ -37,3 +45,5 @@ extend-select = ["B", "DTZ", "I", "S", "UP"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Repo root on sys.path so fixture check modules (tests.fixtures.checks) resolve by name.
+pythonpath = ["."]

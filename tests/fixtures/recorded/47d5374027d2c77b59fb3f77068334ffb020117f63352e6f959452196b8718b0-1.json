@@ -1,0 +1,14 @@
+{
+  "input_tokens": 500,
+  "output_tokens": 50,
+  "stop_reason": "tool_use",
+  "tool_calls": [
+    {
+      "input": {
+        "amount": "75.25",
+        "title": "Whiteboard"
+      },
+      "name": "create_draft_record"
+    }
+  ]
+}

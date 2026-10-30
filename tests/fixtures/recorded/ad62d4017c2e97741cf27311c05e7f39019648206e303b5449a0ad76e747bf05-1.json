@@ -1,0 +1,6 @@
+{
+  "input_tokens": 500,
+  "output_tokens": 50,
+  "stop_reason": "end_turn",
+  "text": "{\"title\": \"Monitor arm\", \"amount\": \"59.90\", \"requested_action\": \"create_draft_record\"}"
+}

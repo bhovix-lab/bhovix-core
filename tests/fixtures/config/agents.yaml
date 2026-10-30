@@ -1,0 +1,11 @@
+- id: test-agent
+  status: live
+  data_class: internal
+  model_route: default
+  prompt_file: prompts/test-agent.md
+  scope_allowed: [lookup_record, create_draft_record, delete_record]
+  tools_allowed: []
+  max_steps: 4
+  budget_usd:
+    daily: "1.00"
+    monthly: "10.00"

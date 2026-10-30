@@ -1,0 +1,26 @@
+# Test client config for the synthetic test-agent. Fakes only, $0.
+routes:
+  default:
+    model_id: fake-model
+    input_usd_per_mtok: "3.00"
+    output_usd_per_mtok: "15.00"
+    max_tokens: 1024
+backends:
+  llm: fake
+  store: memory
+  audit: local_dir
+  channel: fake
+  detector: regex
+audit_dir: audit
+recorded_dir: ../recorded
+golden_dir: ../golden
+inputs_dir: ../inputs
+detector_threshold: 0.5
+eval_threshold: 1.0
+check_modules:
+  - tests.fixtures.checks
+systems:
+  fixture-records:
+    base_url: "http://127.0.0.1:{port}"
+# Test fixture only: the fake system runs on plain http on this machine. Never set in a client config.
+allow_insecure_loopback: true

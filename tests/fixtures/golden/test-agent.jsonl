@@ -1,0 +1,10 @@
+{"expected": {"action": "create_draft_record", "inputs": {"amount": "249.00", "title": "Standing desk"}}, "id": "g01", "input_ref": "golden-01.txt"}
+{"expected": {"action": "create_draft_record", "inputs": {"amount": "120.00", "title": "Office chair"}}, "id": "g02", "input_ref": "golden-02.txt"}
+{"expected": {"action": "create_draft_record", "inputs": {"amount": "59.90", "title": "Monitor arm"}}, "id": "g03", "input_ref": "golden-03.txt"}
+{"expected": {"action": "create_draft_record", "inputs": {"amount": "34.50", "title": "Desk lamp"}}, "id": "g04", "input_ref": "golden-04.txt"}
+{"expected": {"action": "create_draft_record", "inputs": {"amount": "180.00", "title": "Bookshelf"}}, "id": "g05", "input_ref": "golden-05.txt"}
+{"expected": {"action": "create_draft_record", "inputs": {"amount": "75.25", "title": "Whiteboard"}}, "id": "g06", "input_ref": "golden-06.txt"}
+{"expected": {"action": "create_draft_record", "inputs": {"amount": "29.99", "title": "Footrest"}}, "id": "g07", "input_ref": "golden-07.txt"}
+{"expected": {"action": "create_draft_record", "inputs": {"amount": "210.00", "title": "Filing cabinet"}}, "id": "g08", "input_ref": "golden-08.txt"}
+{"expected": {"action": "lookup_record", "inputs": {"id": "rec-042"}}, "id": "g09", "input_ref": "golden-09.txt"}
+{"expected": {"action": "lookup_record", "inputs": {"id": "rec-107"}}, "id": "g10", "input_ref": "golden-10.txt"}
