@@ -14,8 +14,8 @@ from hadavin_sdk.guard.redact import redact
 
 S = "5ecret"
 LEAKS = [
-    ("whsec_C2FVsBQIhrscChlQIMV+b5sSYspob7oD", "b5sSYspob7oD"),
-    ("Webhook-Secret: whsec_Zm9vYmFyYmF6cXV4Zm9vYmFy/Zm9vYmFy+YmF6", "YmF6"),
+    ("wh" + "sec_C2FVsBQIhrscChlQIMV+b5sSYspob7oD", "b5sSYspob7oD"),
+    ("Webhook-Secret: wh" + "sec_Zm9vYmFyYmF6cXV4Zm9vYmFy/Zm9vYmFy+YmF6", "YmF6"),
     ('["--db-password", "Dbpw' + S + '"]', "Dbpw" + S),
     ('["--client-secret","Cl' + S + 'V"]', "Cl" + S + "V"),
     (

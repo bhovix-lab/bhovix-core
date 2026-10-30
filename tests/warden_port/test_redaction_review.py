@@ -47,7 +47,7 @@ def test_status_codes_and_common_words_are_not_rewritten():
         ("curl -u admin:" + "Curl5" + "ecret https://x", "Curl5" + "ecret"),
         ("sshpass -p Ssh5ecret ssh host", "Ssh5ecret"),
         ("docker login -u me -p Dock5ecret reg", "Dock5ecret"),
-        ("whsec_abcdef+b5sSYspob7oD/xyz", "b5sSYspob7oD"),
+        ("wh" + "sec_abcdef+b5sSYspob7oD/xyz", "b5sSYspob7oD"),
         ("host ec2-54-12-34-56.compute-1.amazonaws.com", "54-12-34-56"),
         ("pod 10-0-3-22.default.pod.cluster.local", "10-0-3-22"),
         (
