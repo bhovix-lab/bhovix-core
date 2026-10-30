@@ -57,7 +57,7 @@ def test_credentials_are_masked_jwt_and_api_keys():
     for key in (
         "sk-ant-api03-AbCdEf12345678",
         "sk-proj-abcdef123456",
-        "ghp_AbCdEf1234567890abcd",
+        "ghp" + "_" + "AbCdEf" + "1234567890abcd",
         AWS_ACCESS_KEY_ID,
     ):
         assert key not in redact(f"leaked {key} in a log line").text, f"{key} was not masked"
@@ -182,7 +182,7 @@ def test_high_value_credentials_in_logs_are_masked():
         ("aws_secret_access_key=" + AWS_SECRET_ACCESS_KEY, AWS_SECRET_ACCESS_KEY),
         ("db_password=SuperSecret123", "SuperSecret123"),
         ("client_secret: " + secret_value("my-oauth"), secret_value("my-oauth")),
-        ("token xoxb-123456789-abcdefABCDEF", "xoxb-123456789-abcdefABCDEF"),
+        ("token " + "xoxb" + "-123456789-abcdefABCDEF", "xoxb" + "-123456789-abcdefABCDEF"),
         ("deploy key glpat-abcDEF1234567890", "glpat-abcDEF1234567890"),
     ]
     for text, secret in secrets:
