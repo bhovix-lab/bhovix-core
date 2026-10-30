@@ -1,0 +1,456 @@
+"""Ported from WARDEN tests/test_redaction.py (main a1e76cbf, veerarakesh56/warden). Kept 35 tests; dropped 1 that need WARDEN-only modules or unported gate policy (listed in the PR)."""
+
+import pytest
+
+from hadavin_sdk.guard.redact import redact, redact_many
+from tests.warden_port.fakes import (
+    AWS_ACCESS_KEY_ID,
+    AWS_SECRET_ACCESS_KEY,
+    HUNTER2,
+    JWT,
+    dsn,
+    private_key_block,
+    secret_value,
+)
+
+
+def test_scrubs_the_obvious_identifiers():
+    text = "user alice@corp.io hit 10.4.12.9 for tenant_id=acme-42 trace 3f2504e0-4f89-11d3-9a0c-0305e82c3301 acct 123456789012"
+    r = redact(text)
+    assert "alice@corp.io" not in r.text
+    assert "10.4.12.9" not in r.text
+    assert "acme-42" not in r.text
+    assert "3f2504e0-4f89-11d3-9a0c-0305e82c3301" not in r.text
+    assert "123456789012" not in r.text
+    assert r.size == 5
+
+
+def test_same_value_gets_the_same_placeholder():
+    """The model must still be able to tell that two lines refer to one host."""
+    lines = ["conn from 10.0.0.7 failed", "retry from 10.0.0.7 failed"]
+    out, mapping = redact_many(lines)
+    assert out[0].split()[-2] == out[1].split()[-2]
+    assert len(mapping) == 1
+
+
+def test_arn_is_taken_whole_not_piecemeal():
+    """The WHOLE ARN must become one placeholder, not just the account number masked while the
+    `arn:aws:iam::` prefix and the role path leak. Asserting only that the account digits are gone
+    is not enough - the ACCOUNTID pattern alone satisfies that, so the test would pass even with the
+    ARN pattern deleted. These assertions fail unless the ARN pattern took the whole token.
+    """
+    text = "role arn:aws:iam::123456789012:role/payments-exec denied"
+    r = redact(text)
+    assert "arn:aws:iam::" not in r.text, "the ARN prefix leaked - masked piecemeal, not whole"
+    assert "role/payments-exec" not in r.text, "the role path leaked - masked piecemeal, not whole"
+    assert "123456789012" not in r.text
+    assert r.text == "role <ARN_1> denied", "the whole ARN should collapse to a single placeholder"
+
+
+def test_credentials_are_masked_jwt_and_api_keys():
+    """These two patterns had NO test, so deleting the JWT row or breaking the APIKEY regex kept the
+    whole suite green while a real GitHub token or JWT flowed unredacted into the model prompt - and
+    the MCP redact_text tool advertises masking exactly these. redact() only raises on a MATCHED
+    value that survives, so a pattern that silently stops matching is invisible without this."""
+    jwt = JWT
+    assert jwt not in redact(f"authorization bearer {jwt}").text
+    for key in (
+        "sk-" + "ant-" + "api03-AbCdEf" + "12345678",
+        "sk-" + "proj-abcdef123456",
+        "ghp" + "_" + "AbCdEf" + "1234567890abcd",
+        AWS_ACCESS_KEY_ID,
+    ):
+        assert key not in redact(f"leaked {key} in a log line").text, f"{key} was not masked"
+
+
+def test_non_aws_cloud_secrets_are_masked_gcp_and_azure():
+    """WARDEN runs on any cloud, so redaction must cover GCP and Azure credentials too, not only AWS.
+    GCP OAuth tokens, Azure storage AccountKeys (bare and in connection strings) and Azure SAS
+    signatures all realistically appear in incident logs on those platforms."""
+    secrets = [
+        (
+            "bearer ya" + "29.a0AfH6SMBx7longGcpOAuthTokenValue1234567890",
+            "ya" + "29.a0AfH6SMBx7longGcpOAuthTokenValue1234567890",
+        ),
+        (
+            "DefaultEndpointsProtocol=https;AccountName=st;Account"
+            + "Key="
+            + "YmFzZTY0QXp1cmVL"
+            + "ZXlWYWx1ZTk5==;x",
+            "YmFzZTY0QXp1cmVLZXlWYWx1ZTk5==",
+        ),
+        (
+            "Account" + "Key=" + "Zm9vYmFyYmF6" + "cXV4MTIzNDU2Nzg5MGFi==",
+            "Zm9vYmFyYmF6" + "cXV4MTIzNDU2Nzg5MGFi==",
+        ),
+        (
+            "https://s.blob.core.windows.net/c?sv=2021&sig=abcDEF123SasSignatureXyz789",
+            "abcDEF123SasSignatureXyz789",
+        ),
+    ]
+    for text, secret in secrets:
+        assert secret not in redact(text).text, f"{secret!r} (non-AWS cloud secret) leaked"
+
+
+def test_session_cookies_npm_and_github_pat_are_masked():
+    """Session cookies are live bearer credentials (theft = account takeover); npm _authToken and
+    GitHub fine-grained PATs (github_pat_) are publish credentials that flood CI/build logs. Token
+    literals are split so this file does not itself trip a secret scanner."""
+    assert "8f9a7b6c5d4e3f2a" not in redact("Set-Cookie: sessionid=8f9a7b6c5d4e3f2a; Path=/").text
+    assert "a1b2c3d4e5f6a7b8" not in redact("Cookie: PHPSESSID=a1b2c3d4e5f6a7b8").text
+    assert "0000abcd1234efgh" not in redact("Set-Cookie: JSESSIONID=0000abcd1234efgh; Secure").text
+    npm_token = "npm_" + "aB3dE5fG7hI9jK1lM3nO5pQ7"
+    assert npm_token not in redact(f"//registry.npmjs.org/:_authToken={npm_token}").text
+    pat = "github_pat_" + "11ABCDE0aZ9wKfN3pQrLxYbVzTmEs"
+    assert pat not in redact(f"remote: invalid credentials for {pat}").text
+
+
+def test_http_basic_auth_and_kubeconfig_secrets_are_masked():
+    """HTTP Basic auth (base64 of user:pass) and a kubeconfig's client-key-data / certificate-data
+    are credentials that appear in incident logs on any platform - Basic follows the same shape as
+    Bearer, and the kube data keys are keyed base64 values."""
+    assert "dXNlcjpzM2NyM3RwYXNz" not in redact("Authorization: Basic dXNlcjpzM2NyM3RwYXNz").text
+    assert (
+        "cHJpdmF0ZWtleWRhdGE" not in redact("client-key-" + "data: " + "cHJpdmF0ZWtleWRhdGE=").text
+    )
+    assert "LS0tQ0VSVGRhdGE" not in redact("client-certificate-data: LS0tQ0VSVGRhdGE=").text
+    assert "plan" in redact("the basic plan is free").text
+
+
+def test_query_param_credentials_are_masked():
+    """URLs with ?password= / &token= / ?api_key= are ubiquitous in HTTP access logs and webhook
+    configs; the leading ? or & is a real delimiter, and the value must stop at the next &param."""
+    assert (
+        "SuperSecretPw99" not in redact("https://x.io/cb?password=SuperSecretPw99&next=/home").text
+    )
+    assert (
+        "abc123def456ghi789"
+        not in redact("GET /reset?access_" + "token=" + "abc123def456" + "ghi789 HTTP/1.1").text
+    )
+    assert "/home" in redact("https://x.io/cb?password=SuperSecretPw99&next=/home").text, (
+        "over-masked past &"
+    )
+
+
+def test_a_comma_bearing_secret_is_masked_whole_not_just_the_head():
+    """A secret containing a comma was leaking its tail (only the part before the comma was masked).
+    Now the whole value is masked - but a comma that begins a NEW key=value pair still stops it, so
+    an ordinary `k=v1,k2=v2` config pair is not gobbled."""
+    assert "defSECRET" not in redact("password: abc,defSECRET").text
+    assert "Zq9mK" not in redact("password=aB3xy,Zq9mK").text
+    assert "key2=v2" in redact("password=v1,key2=v2 next").text, "gobbled the next pair"
+
+
+def test_webhook_urls_with_a_token_in_the_path_are_masked():
+    """Slack/Discord/Teams incoming-webhook URLs carry the credential in the PATH - the whole URL is
+    the secret. No key=value, no vendor prefix, so only a dedicated pattern catches them."""
+    slack = "https://hooks.slack.com/services" + "/T00000000/B00000000/abcdEFGHijklMNOPqrstUVWX"
+    disc = "https://discord.com/api/webhooks" + "/123456789/tokenABCdef_123"
+    assert "abcdEFGHijklMNOPqrstUVWX" not in redact(f"alert to {slack} sent").text
+    assert "tokenABCdef_123" not in redact(f"posted {disc}").text
+
+
+def test_secrets_in_json_values_are_masked():
+    """Structured (JSON) logs are ubiquitous, and a credential there has the key's closing quote
+    between the keyword and the colon (`"password": "x"`) - which the keyed-value pattern missed.
+    A non-credential JSON value must NOT be over-masked."""
+    pw = "s3cr3tJsonValue"
+    assert pw not in redact('{"password": "' + pw + '"}').text
+    assert "AbCdEf123456key" not in redact('{"api_' + 'key":"' + "AbCdEf123456" + 'key"}').text
+    assert "value42" in redact('{"config": "value42"}').text, "benign JSON value over-masked"
+
+
+def test_url_encoded_email_is_masked():
+    """A URL-encoded email (`%40` for `@`, normal in HTTP access logs) reads as the email to both
+    the model and an operator, so the encoding must not be a redaction bypass. A plain email stays
+    masked too."""
+    assert "admin%40corp.example.com" not in redact("user=admin%40corp.example.com hit /login").text
+    assert "bob@corp.io" not in redact("bob@corp.io paged").text
+
+
+def test_high_value_credentials_in_logs_are_masked():
+    """The classes an adversarial review found leaking into the model in the clear: DB
+    connection-string passwords, PEM private keys, bearer tokens, the AWS secret access key (the
+    credential paired with the AKIA id), and password=/secret= assignments. These are realistic in
+    a misconfig/credential-leak incident log - the exact input this tool exists to handle."""
+    secrets = [
+        (dsn("postgres", "svc", "S3cretPass", "10.0.0.5:5432/orders"), "S3cretPass"),
+        (dsn("mysql", "root", HUNTER2 + "xyz", "dbhost/app"), HUNTER2 + "xyz"),
+        ("redis://:my-redis-pass1@cache:6379", "my-redis-pass1"),
+        ("Authorization: Bearer " + "abc123def456ghi789jkl", "abc123def456ghi789jkl"),
+        (private_key_block("RSA", "MIIEpAIBAAKCAQEA7f8v2n"), "MIIEpAIBAAKCAQEA7f8v2n"),
+        ("aws_secret_access_key=" + AWS_SECRET_ACCESS_KEY, AWS_SECRET_ACCESS_KEY),
+        ("db_password=SuperSecret123", "SuperSecret123"),
+        ("client_secret: " + secret_value("my-oauth"), secret_value("my-oauth")),
+        ("token " + "xoxb" + "-123456789-abcdefABCDEF", "xoxb" + "-123456789-abcdefABCDEF"),
+        ("deploy key " + "glpat" + "-abcDEF1234567890", "glpat" + "-abcDEF1234567890"),
+    ]
+    for text, secret in secrets:
+        assert secret not in redact(text).text, f"{secret!r} leaked to the model"
+
+
+def test_credential_patterns_do_not_over_mask_benign_config():
+    """The credential patterns must not eat ordinary evidence: a path, a date, a plain word, a
+    non-secret key=value. Over-redaction destroys the very evidence the model reasons about."""
+    for text, benign in [
+        ("access_log=/var/log/app.log", "/var/log/app.log"),
+        ("the password policy requires rotation", "policy"),
+        ("broker_topic=orders.v2", "orders.v2"),
+        ("retry_count=5 attempts", "retry_count"),
+        ("see https://github.com/org/repo", "github.com"),
+    ]:
+        assert benign in redact(text).text, f"{benign!r} was over-masked"
+
+
+def test_ipv6_addresses_are_masked_like_ipv4():
+    """We redact IPv4, so IPv6 (common in dual-stack k8s logs) is the same identifier. A time
+    (10:02:11) - colons without a `::` or 8 groups - must survive as evidence."""
+    assert "2001:db8:85a3::8a2e:370:7334" not in redact("from 2001:db8:85a3::8a2e:370:7334").text
+    assert "fe80::1" not in redact("gw fe80::1").text
+    assert redact("event at 10:02:11 today").size == 0, "a time was masked as an IPv6/MAC address"
+
+
+def test_mac_addresses_are_masked_as_device_reidentifiers():
+    """A MAC is a persistent device re-identifier (like an IP), so it is masked - in colon, dash and
+    Cisco-dotted forms - but as MAC, never as IPv6, and a time is still left alone."""
+    for text, mac in [
+        ("nic 00:1a:2b:3c:4d:5e up", "00:1a:2b:3c:4d:5e"),
+        ("arp 00-1A-2B-3C-4D-5E", "00-1A-2B-3C-4D-5E"),
+        ("switch 001a.2b3c.4d5e", "001a.2b3c.4d5e"),
+    ]:
+        r = redact(text)
+        assert mac not in r.text, f"MAC {mac} leaked"
+        assert "<MAC_" in r.text, "masked as MAC, not IPv6"
+        assert "<IPV6_" not in r.text, "masked as MAC, not IPv6"
+    assert redact("event at 10:02:11 today").size == 0, "a time must not be masked as a MAC"
+
+
+def test_iso_date_is_not_mistaken_for_a_phone_number():
+    """Regression: the PHONE pattern matched YYYY-MM-DD, so every log line's timestamp was masked as
+    a phone and the temporal evidence was lost. A real phone must still be masked."""
+    r = redact("2026-08-21T10:02:11Z checkout ERROR 500 after deploy")
+    assert "2026-08-21" in r.text, "the date was masked as a phone number"
+    assert redact("2026-08-21").size == 0
+    assert "+1 415-555-0142" not in redact("oncall +1 415-555-0142 paged").text
+
+
+def test_restore_round_trips():
+    text = "alice@corp.io paged for 10.4.12.9"
+    r = redact(text)
+    assert r.restore(r.text) == text
+
+
+def test_survives_a_value_embedded_in_a_larger_token():
+    """Live-cluster regression: a Kubernetes event embeds the pod UID inside a longer token
+    (`..._default_<uid>_0`) where a trailing-`\\b` regex misses one of two occurrences. The final
+    literal sweep must catch the copy the pattern skipped."""
+    uid = "534e3098-a21e-415b-8010-24ae0fb955bb"
+    text = f"reserve name checkout_default_{uid}_0 pod=({uid})"
+    r = redact(text)
+    assert uid not in r.text
+    assert r.text.count("<UUID_1>") == 2, "both occurrences masked, same placeholder"
+
+
+def test_clean_text_is_untouched():
+    text = "checkout latency rose after the deploy"
+    r = redact(text)
+    assert r.text == text
+    assert r.size == 0
+
+
+def test_a_secret_that_looks_like_a_placeholder_token_does_not_corrupt():
+    """Pathological collision: a tenant value literally equal to another placeholder's internal text.
+
+    `tenant_id=UUID_1` maps to `<TENANT_1>`, while a real UUID nearby maps to `<UUID_1>`. A naive
+    literal sweep would rewrite the `UUID_1` inside `<UUID_1>` to `<TENANT_1>`, producing the mangled
+    `<<TENANT_1>>` - two distinct secrets collapsed onto one label, and a broken restore. The sweep
+    must leave existing placeholders alone, and the leak guard must not false-alarm on the coincidence.
+    """
+    text = "tenant_id=UUID_1 trace 3f2504e0-4f89-11d3-9a0c-0305e82c3301"
+    r = redact(text)
+    assert "<<" not in r.text, f"corrupted placeholder: {r.text!r}"
+    assert ">>" not in r.text, f"corrupted placeholder: {r.text!r}"
+    assert r.text.count("<UUID_1>") == 1
+    assert r.text.count("<TENANT_1>") == 1
+    assert r.restore(r.text) == text, "restore must reproduce the original exactly"
+
+
+def test_redaction_round_trips_through_restore():
+    text = "user bob@corp.io on 192.168.1.7 tenant_id=acme-9 trace 9f8b7c6d-1234-4a5b-8c9d-0e1f2a3b4c5d twice: 192.168.1.7"
+    r = redact(text)
+    assert r.restore(r.text) == text
+
+
+def test_aws_sts_temporary_access_key_is_masked():
+    """ASIA... is the STS temporary sibling of AKIA...; both are AWS access-key ids and must mask.
+
+    Literal split so GitHub secret-scanning push-protection does not flag the fake key in the diff.
+    """
+    key = "ASIA" + "Z7XK9QW2E4RTYU6P"
+    r = redact(f"botocore.exceptions.ClientError (ExpiredToken) access key {key}")
+    assert key not in r.text
+    assert "<APIKEY_1>" in r.text
+
+
+def test_iban_is_masked_but_only_for_real_country_prefixes():
+    """IBANs are financial PII in payment incident logs; masked whole. A non-IBAN uppercase token
+    that merely starts 2-letters-2-digits (AB12...) must NOT be clobbered by the IBAN pattern."""
+    for iban in ("DE89370400440532013000", "FR1420041010050500013M02606", "GB29NWBK60161331926819"):
+        r = redact(f"SEPA transfer to {iban} settled")
+        assert iban not in r.text, f"IBAN leaked: {iban}"
+        assert "<IBAN_1>" in r.text
+    r = redact("correlation AB12CDEFGHIJKLMNOP note")
+    assert "<IBAN" not in r.text, "non-IBAN token wrongly masked as IBAN"
+
+
+def test_grouped_credit_card_is_masked_whole():
+    """A spaced/dashed PAN: PHONE alone catches only the first 12-14 digits and leaks the last group.
+    4111... is a well-known Visa TEST number (not a real card)."""
+    for pan in ("4111 1111 1111 1111", "4111-1111-1111-1111"):
+        r = redact(f"charge {pan} declined")
+        assert pan not in r.text, f"card leaked: {pan}"
+        assert "<CREDITCARD_1>" in r.text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "kubelet OOMKilled pod=checkout-7d9f8 node=ip-10-0-3-22\n2026-08-21T14:12:03Z kubelet OOMKilled",
+        "orders ERROR connection pool exhausted (50/50) db=orders-db-ro-1\n2026-08-21T03:20:04Z orders ERROR",
+        "WARDEN benchmark - wave2-2026-09-24T115746Z",
+        "checkout-7bcd5ccbc9-tw8gw/checkout 2026-09-24T12:10:56.921256607Z checkout: heartbeat ok",
+        "task 4471 2026-09-11T18:09:10Z started",
+        "order 12 2026-09-11 shipped",
+        "pid 30122 2026-10-10T07:55:01Z exit 1",
+        "retries 3 4 2026-10-10 again",
+    ],
+)
+def test_identifiers_and_timestamps_are_not_masked_as_phone_numbers(text):
+    """⛔ Evidence corrupted by the redactor is evidence lost: a node name, a replica name and a
+    timestamp are what an operator greps for, and a merged pair of log lines misstates what happened."""
+    r = redact(text)
+    assert "<PHONE_" not in r.text, f"masked as a phone: {r.text!r}"
+    assert r.text.count("\n") == text.count("\n"), "a line break was swallowed"
+
+
+@pytest.mark.parametrize(
+    "text,number",
+    [
+        ("call +1 415-555-0132 now", "415-555-0132"),
+        ("phone=4155550132 retry", "4155550132"),
+        ("tel: +91 98765 43210", "98765 43210"),
+        ("contact +91-98765-43210 asap", "98765-43210"),
+        ("called 4155550132 2026-10-10T07:55:01Z twice", "4155550132"),
+        ("called +1 415 555 0132 2026-10-10 twice", "415 555 0132"),
+    ],
+)
+def test_real_phone_numbers_are_still_masked(text, number):
+    r = redact(text)
+    assert number not in r.text, r.text
+    assert "<PHONE_" in r.text, r.text
+    assert ("2026-10-10" in text) == ("2026-10-10" in r.text)
+
+
+def test_a_contiguous_card_number_is_still_masked():
+    """CREDITCARD leaves the contiguous 16-digit form to PHONE; narrowing PHONE must not unmask it."""
+    assert "4111111111111111" not in redact("card 4111111111111111 declined").text
+
+
+def test_a_short_tenant_value_does_not_rewrite_every_status_code():
+    """Audit A-C-4: `user_id=500` put "500" in the map and the literal sweep turned every HTTP 500
+    in the text into the tenant placeholder."""
+    out = redact("user_id=500 then GET /cart HTTP 500 and SELECT 500 FROM t")
+    assert "HTTP 500" in out.text
+    assert "SELECT 500" in out.text
+    assert "user_id=<TENANT_1>" in out.text
+
+
+def test_a_mid_length_value_is_swept_only_where_it_stands_alone():
+    out = redact("tenant_id=acme42 then acme42 again, but not xacme42x or acme420")
+    assert out.text.count("<TENANT_1>") == 2
+    assert "xacme42x" in out.text
+    assert "acme420" in out.text
+
+
+def test_a_long_value_is_swept_even_inside_a_longer_token():
+    """The reason the sweep exists: a pod UID inside `..._default_<uid>_0`."""
+    uid = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"
+    out = redact(f"pod {uid} and k8s_x_default_{uid}_0")
+    assert uid not in out.text
+
+
+@pytest.mark.parametrize(
+    "secret, gone",
+    [
+        (
+            "run.sh --db-password " + HUNTER2.capitalize() + "Secret --user app",
+            HUNTER2.capitalize() + "Secret",
+        ),
+        ("psql --password=" + HUNTER2.capitalize() + "Secret", HUNTER2.capitalize() + "Secret"),
+        ("cli --api-" + "key " + "abcd1234" + "efgh", "abcd1234" + "efgh"),
+        ("stripe wh" + "sec_abcdefghijklmnop123", "wh" + "sec_abcdefghijklmnop123"),
+        ("slack " + "xapp" + "-1-A0B1C2D3-12345-abcdef", "xapp" + "-1-A0B1C2D3-12345-abcdef"),
+        (private_key_block("PGP", "lQOYBGbody"), "lQOYBGbody"),
+        ("node ip-10-0-3-22.ap-south-2.compute.internal NotReady", "10-0-3-22"),
+    ],
+)
+def test_credential_shapes_the_audit_found_are_masked(secret, gone):
+    assert gone not in redact(secret).text
+
+
+def test_a_flag_followed_by_another_flag_masks_nothing():
+    assert redact("tool --password --user app").text == "tool --password --user app"
+
+
+_JWT = JWT
+OWN_SHAPES = [
+    ("JWT", "session " + _JWT, _JWT),
+    (
+        "GCPTOKEN",
+        "token ya" + "29." + "a0AfH6SMBxExampleOnly0123456789",
+        "a0AfH6SMBxExampleOnly0123456789",
+    ),
+    ("BASIC", "curl -H 'Basic " + "dXNlcjpwYXNzd29yZA==" + "'", "dXNlcjpwYXNzd29yZA=="),
+    ("BEARER", "sent Bearer " + "abcdef1234567890ghij", "abcdef1234567890ghij"),
+    (
+        "WEBHOOK",
+        "posting to https://hooks.slack.com/"
+        + "services/"
+        + "T"
+        + "0000AAAA/B"
+        + "0000BBBB/cccccccc",
+        "cccccccc",
+    ),
+    (
+        "WEBHOOK",
+        "posting to https://discord.com/api/webhooks/" + "123456789/" + "abcDEF_ghi-JKLmnop",
+        "abcDEF_ghi-JKLmnop",
+    ),
+    (
+        "APIKEY",
+        "cloned with github_pat_" + "11ABCDEFG0123456789_abcdefghij",
+        "11ABCDEFG0123456789_abcdefghij",
+    ),
+    ("APIKEY", "published with npm_" + "abcdefghijklmnop1234", "abcdefghijklmnop1234"),
+]
+
+
+@pytest.mark.parametrize(
+    "kind, text, secret", OWN_SHAPES, ids=[f"{k}-{t.split()[0]}" for k, t, _ in OWN_SHAPES]
+)
+def test_each_pattern_masks_its_own_shape(kind, text, secret):
+    """Audit A-C-VT: the older rows passed because a DIFFERENT pattern (BEARER, SECRET, HIGHENTROPY)
+    caught the value. Asserting the placeholder kind makes each row fail when its own pattern goes."""
+    out = redact(text).text
+    assert secret not in out, out
+    assert f"<{kind}_" in out, out
+
+
+@pytest.mark.parametrize("sep", ["=", ": ", " "])
+def test_a_high_entropy_value_after_any_key_is_masked(sep):
+    """Found 2026-09-30: the HIGHENTROPY backstop's lookbehind excluded `=`, so a 40+ character secret
+    right after `blob=` (a key no credential pattern names) was never masked."""
+    value = "Ab3" + "xK9mQ2" * 7
+    out = redact(f"blob{sep}{value}").text
+    assert value not in out, out
+    assert "<HIGHENTROPY_" in out, out
