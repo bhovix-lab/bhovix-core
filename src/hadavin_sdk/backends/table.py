@@ -318,6 +318,9 @@ class Entry:
     # The hosts this kind's SDK or HTTP client connects to (design 4.5, 12.9): `hadavin_sdk.backends.hosts`
     # builds a suggested egress list from them. None: no network, or a host only a secret names (a DSN).
     hosts: Callable[[Any], list[str]] | None = None
+    # Built on an open standard or on self-hostable open source: a client on any cloud or on-prem can run it
+    # in prod. `tests/test_lockin_guard.py` needs one per capability (or a dated exception).
+    neutral: bool = False
 
 
 def _aws_host(service: str, region: str) -> str:
@@ -377,6 +380,7 @@ TABLE: dict[str, dict[str, Entry]] = {
             f"{_ACTIONS}.secrets_vault:build",
             status=_UNVERIFIED,
             hosts=lambda s: [urlsplit(s.address).hostname or ""],
+            neutral=True,
         ),
         "azure_key_vault": Entry(
             AzureKeyVaultSettings,
@@ -393,13 +397,20 @@ TABLE: dict[str, dict[str, Entry]] = {
             hosts=lambda s: ["secretmanager.googleapis.com", "oauth2.googleapis.com"],
         ),
         "mounted_file": Entry(
-            MountedFileSettings, f"{_ACTIONS}.secrets_file:build", status=_UNVERIFIED
+            MountedFileSettings,
+            f"{_ACTIONS}.secrets_file:build",
+            status=_UNVERIFIED,
+            neutral=True,
         ),
     },
     "signer": {
         "none": Entry(KindSettings, f"{_BUILTIN}:no_signer"),
         "ed25519_local": Entry(
-            Ed25519LocalSettings, f"{_SIGNER}:build_local", extra="signer", status=_UNVERIFIED
+            Ed25519LocalSettings,
+            f"{_SIGNER}:build_local",
+            extra="signer",
+            status=_UNVERIFIED,
+            neutral=True,
         ),
         "aws_kms": Entry(
             AwsKmsSettings,
@@ -428,6 +439,7 @@ TABLE: dict[str, dict[str, Entry]] = {
             extra="signer",
             status=_UNVERIFIED,
             hosts=lambda s: [urlsplit(s.address).hostname or ""],
+            neutral=True,
         ),
     },
     # Where each signed checkpoint is also written, out of the runtime's reach (WORM).
@@ -439,6 +451,7 @@ TABLE: dict[str, dict[str, Entry]] = {
             extra="aws",
             status=_UNVERIFIED,
             hosts=_s3_anchor_hosts,
+            neutral=True,
         ),
         "azure_immutable_blob": Entry(
             AzureImmutableBlobSettings,
@@ -458,13 +471,21 @@ TABLE: dict[str, dict[str, Entry]] = {
     "store": {
         "memory": Entry(KindSettings, f"{_BUILTIN}:memory_store"),
         "postgres": Entry(
-            PostgresSettings, "hadavin_sdk.store.postgres:build", extra="pg", status=_UNVERIFIED
+            PostgresSettings,
+            "hadavin_sdk.store.postgres:build",
+            extra="pg",
+            status=_UNVERIFIED,
+            neutral=True,
         ),
     },
     "audit": {
         "local_dir": Entry(LocalDirSettings, f"{_BUILTIN}:local_dir_audit"),
         "chain": Entry(
-            ChainSettings, "hadavin_sdk.audit.chain:build", extra="signer", status=_UNVERIFIED
+            ChainSettings,
+            "hadavin_sdk.audit.chain:build",
+            extra="signer",
+            status=_UNVERIFIED,
+            neutral=True,
         ),
     },
     "llm": {
@@ -489,6 +510,7 @@ TABLE: dict[str, dict[str, Entry]] = {
             "hadavin_sdk.llm.openai_compat:make",
             status=_UNVERIFIED,
             hosts=lambda s: [urlsplit(s.base_url).hostname or ""],
+            neutral=True,
         ),
         "gemini": Entry(
             GeminiSettings,
@@ -498,9 +520,11 @@ TABLE: dict[str, dict[str, Entry]] = {
         ),
     },
     "detector": {
-        "regex": Entry(RegexSettings, f"{_BUILTIN}:regex_detector"),
+        "regex": Entry(RegexSettings, f"{_BUILTIN}:regex_detector", neutral=True),
         # llm_judge connects through the configured llm kind (its hosts are the llm's).
-        "llm_judge": Entry(JudgeSettings, "hadavin_sdk.guard.judge:make", status=_UNVERIFIED),
+        "llm_judge": Entry(
+            JudgeSettings, "hadavin_sdk.guard.judge:make", status=_UNVERIFIED, neutral=True
+        ),
         "bedrock_guardrail": Entry(
             GuardrailSettings,
             "hadavin_sdk.guard.bedrock_guardrail:make",

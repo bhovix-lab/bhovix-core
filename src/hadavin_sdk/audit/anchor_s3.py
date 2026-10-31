@@ -36,8 +36,17 @@ class S3Anchor:
         self.bucket, self._s3, self.mode, self.retain = bucket, client, mode, retain
         self.clock = clock or (lambda: datetime.now(UTC))
 
-    def put(self, seq: int, head: str, signature: str) -> None:
-        name, data = anchors.key(seq), anchors.body(seq, head, signature)
+    def put(
+        self,
+        seq: int,
+        head: str,
+        signature: str,
+        *,
+        alg: str | None = None,
+        key_id: str | None = None,
+    ) -> None:
+        name = anchors.key(seq)
+        data = anchors.body(seq, head, signature, alg, key_id)
         try:
             self._s3.put_object(
                 Bucket=self.bucket,

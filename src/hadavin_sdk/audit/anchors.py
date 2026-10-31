@@ -17,8 +17,17 @@ def key(seq: int) -> str:
     return f"{PREFIX}{seq:012d}.json"
 
 
-def body(seq: int, head: str, signature: str) -> bytes:
-    return json.dumps({"seq": seq, "hash": head, "signature": signature}, sort_keys=True).encode()
+def body(
+    seq: int, head: str, signature: str, alg: str | None = None, key_id: str | None = None
+) -> bytes:
+    """`alg` and `key_id` name the signature scheme and the key that made it, so an auditor holding only the
+    anchor objects and a public key needs nothing else to verify them (`chain.verify_anchor_bodies`)."""
+    doc = {"seq": seq, "hash": head, "signature": signature}
+    if alg is not None:
+        doc["alg"] = alg
+    if key_id is not None:
+        doc["key_id"] = key_id
+    return json.dumps(doc, sort_keys=True).encode()
 
 
 def parse(raw: bytes) -> tuple[int, tuple[str, str]]:

@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Upgrade steps
+- **Lock-in guard.** `tests/test_lockin_guard.py` fails CI when a vendor SDK is imported outside its kind
+  module, a capability lacks a neutral prod kind (`Entry.neutral`) and two prod kinds without a dated
+  exception, or core logic names a vendor.
+  - Anchor objects now carry `alg` and `key_id`, so `chain.verify_anchor_bodies(bodies, public_key)` checks
+    them with nothing else. A custom anchor kind's `put` must accept `alg` and `key_id` keywords. Anchors
+    written before this change have no body fields and verify only through `verify()`.
 - **P5/P6 follow-ups.**
   - **Re-gate every agent once.** `golden_sha256` now covers the input documents the golden cases point at,
     so a changed document un-qualifies.
