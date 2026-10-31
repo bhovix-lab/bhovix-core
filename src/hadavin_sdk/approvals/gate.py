@@ -366,8 +366,8 @@ _UNVERIFIABLE = re.compile(
 #
 # A story of a command, not a command, passes (WARDEN measured 2,035 recorded model strings, 2026-10-16), in two
 # narrow shapes only:
-# - a quoted name in prose: `a 'kubectl rollout restart' replaced the pods`, where the quote closes after at most
-#   three words and prose follows; never a backtick, never after `-c`, never at the end of the text;
+# - a quoted name in prose: `a 'kubectl rollout restart' replaced the pods`, opened by an article, closed within
+#   three words and followed by prose; never a backtick, never at the end of the text;
 # - an English-word CLI (`git`, `docker`, `podman`, `helm`, `ansible`) mid-sentence, with no flag and no write
 #   verb next: `the docker image was rebuilt`. At the start of a line, after `$`, `sudo`, a shell operator or a
 #   backtick, or with a flag or a write verb, it is a command.
@@ -535,11 +535,20 @@ _PROGRAM = re.compile(
 _TOKEN = re.compile(r"[^\S\n]+([^\s]+)")
 _PLAIN = re.compile(r"[a-z][a-z0-9-]*")
 _CODE_BEFORE = re.compile(r"(?:^|[`$;|&({]|\bsudo)[^\S\n]*$")
+# A quoted name is prose only when an article opens it (`a 'kubectl rollout restart' replaced`).
+_PROSE_QUOTE = re.compile(r"(?:^|[^\S\n])(?i:a|an|the)[^\S\n]+['\"]$")
 _NO_VALUE_FLAGS = frozenset({"--no-pager", "-A", "--all-namespaces", "-q", "--quiet", "--oneline"})
 _ANY_CASE = frozenset({"redis-cli"})  # its commands are written in capitals (FLUSHALL)
 
 
 def _tokens(text: str, start: int) -> list[str]:
+    while text[start : start + 1] in (
+        "'",
+        '"',
+        "`",
+        ")",
+    ):  # `'kubectl' delete`, `$(command -v kubectl) delete`
+        start += 1
     out, pos = [], start
     for _ in range(_MAX_TOKENS):
         m = _TOKEN.match(text, pos)
@@ -594,7 +603,9 @@ def _story(text: str, prog: str, s: int, e: int, toks: list[str]) -> bool:
     if not toks or re.fullmatch(r"[A-Z][a-z]+|[^\w/.~$-]+", first):
         return True  # `the aws Lambda runtime`: a capitalised word or punctuation, not an argument
     # A quoted name in prose: the quote opens right before it, closes within three words, and prose follows.
-    if before.endswith(("'", '"')) and not before[:-1].rstrip().endswith("-c"):
+    if _PROSE_QUOTE.search(
+        before
+    ):  # `a 'kubectl rollout restart' replaced`; never `ssh host '…' now`
         quote = before[-1]
         close = text.find(quote, e, e + 80)
         after = text[close + 1 : close + 3] if close != -1 else ""
@@ -612,7 +623,11 @@ def _story(text: str, prog: str, s: int, e: int, toks: list[str]) -> bool:
         # ponytail: a kubectl/git plugin or alias (`kubectl foo`) reads as prose here; list it in _OWN.
         return True
     if prog in _ENGLISH and not _CODE_BEFORE.search(before):
-        return not any(t.startswith("-") for t in toks) and word not in _WRITE_VERBS
+        # `Run docker volume rm data`: a write verb anywhere in the first three subcommand words is a command.
+        leading = _subcommands(toks)[:3]
+        return not any(t.startswith("-") for t in toks) and not any(
+            w in _WRITE_VERBS for w in leading
+        )
     return False
 
 

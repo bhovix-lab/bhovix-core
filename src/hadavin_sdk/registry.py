@@ -117,7 +117,14 @@ class Registry:
                 # Where and how the model runs (design 4.3); keys only when set, so `fake` agents keep their hash.
                 **{
                     f"llm_{k}": getattr(llm, k)
-                    for k in ("platform", "base_url", "resource", "max_completion_tokens")
+                    for k in (
+                        "platform",
+                        "base_url",
+                        "resource",
+                        "region",
+                        "project_id",
+                        "max_completion_tokens",
+                    )
                     if getattr(llm, k, None)
                 },
                 **({"judges": judges} if judges else {}),
@@ -125,7 +132,7 @@ class Registry:
                 # the default 1.0, so agents gated at the default keep their hash.
                 **(
                     {"eval_threshold": str(self.config.eval_threshold)}
-                    if self.config.eval_threshold != 1.0
+                    if self.config.eval_threshold < 1.0  # at most 1.0 (config); no float equality
                     else {}
                 ),
             }

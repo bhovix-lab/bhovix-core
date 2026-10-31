@@ -170,6 +170,13 @@ BYPASSES = [
     "Run docker rm web",
     "git push origin +main",
     "docker-compose down -v",
+    # CodeRabbit on #20:
+    "$(command -v kubectl) delete ns prod",
+    "ssh host 'kubectl delete ns prod' now",
+    "'kubectl' delete ns prod",
+    "Run docker volume rm data",
+    "Run docker compose down",
+    "Run docker system prune",
 ]
 
 
