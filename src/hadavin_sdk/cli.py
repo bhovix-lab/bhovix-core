@@ -1,6 +1,7 @@
 """hadavin-sdk CLI.
 
-  hadavin-sdk [--config DIR] gate <agent>                exit 0 when green, 1 when below the threshold
+  hadavin-sdk [--config DIR] gate <agent> [--k K]        exit 0 when green, 1 when below the threshold;
+                                                         --k K runs each item K times (pass^k), default 1
   hadavin-sdk [--config DIR] limits stop|reset --by WHO  needs a shared store (postgres); memory: exit 2
   hadavin-sdk [--config DIR] tick                       one pass of approvals sweep, reconcile, stuck runs,
                                                          audit checkpoint; exit 0 ok, 1 a step failed,
@@ -28,12 +29,24 @@ from hadavin_sdk.limits import Limits
 from hadavin_sdk.registry import load_registry
 
 
+def _num(x: float | None, places: int = 2) -> str:
+    return "-" if x is None else f"{x:.{places}f}"
+
+
+def _positive(text: str) -> int:
+    k = int(text)
+    if k < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return k
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="hadavin-sdk")
     p.add_argument("--config", help="client config folder (overrides HADAVIN_CONFIG_DIR)")
     sub = p.add_subparsers(dest="cmd", required=True)
     g = sub.add_parser("gate", help="run an agent's golden set")
     g.add_argument("agent")
+    g.add_argument("--k", type=_positive, default=1, help="runs per golden item (pass^k)")
     lim = sub.add_parser("limits", help="kill switch")
     lim.add_argument("action", choices=["stop", "reset"])
     lim.add_argument("--by", required=True)
@@ -55,11 +68,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "gate":
         b = cfg.backends
         run = evals.gate(
-            reg, make("llm", b.llm, make("secrets", b.secrets), routes=cfg.routes), args.agent
+            reg,
+            make("llm", b.llm, make("secrets", b.secrets), routes=cfg.routes),
+            args.agent,
+            k=args.k,
         )
+        # k == 1: today's "passed/n" line. k > 1: the fraction behind pass@1, (item, run) pairs passed / n*k;
+        # the item count passing all k runs is pass^k below.
+        pairs = run.n * run.k
+        frac = f"{run.passed}/{run.n}" if run.k == 1 else f"{round(run.pass_rate * pairs)}/{pairs}"
         print(
-            f"{run.agent_id}: {run.passed}/{run.n} = {run.pass_rate:.2f} "
+            f"{run.agent_id}: {frac} = {run.pass_rate:.2f} "
             f"(threshold {run.threshold:.2f}) -> {'GREEN' if run.green else 'RED'}"
+            f", pass^k={_num(run.pass_k)}, abstain={_num(run.abstain_rate)}"
+            f", bound={_num(run.upper_error_bound, 3)}"
         )
         return 0 if run.green else 1
 
