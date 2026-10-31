@@ -440,9 +440,10 @@ def verify_anchor_bodies(bodies: list[bytes], public_key: bytes) -> list[str]:
         try:
             a = json.loads(raw)
             seq, head, alg = a["seq"], a["hash"], a["alg"]
-            if type(seq) is not int:
-                raise TypeError("seq")
-            key_ids.add(a["key_id"])
+            key_id = a["key_id"]
+            if type(seq) is not int or seq < 1 or not isinstance(key_id, str) or not key_id:
+                raise TypeError("seq or key_id")
+            key_ids.add(key_id)
             signature = bytes.fromhex(a["signature"])
         except (ValueError, KeyError, TypeError):
             problems.append("an anchor body is unreadable or has no alg and key_id")
@@ -453,7 +454,7 @@ def verify_anchor_bodies(bodies: list[bytes], public_key: bytes) -> list[str]:
         if not verify_signature(public_key, signature, _signed_message(seq, head), alg):
             problems.append(f"anchor {seq} has an invalid signature")
     if len(key_ids) > 1:
-        problems.append(f"anchors were signed by {len(key_ids)} different keys: {sorted(key_ids)}")
+        problems.append(f"anchors report {len(key_ids)} different key IDs: {sorted(key_ids)}")
     return problems
 
 

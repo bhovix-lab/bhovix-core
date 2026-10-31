@@ -557,7 +557,9 @@ def test_core_logic_names_no_vendor():
 
 
 def test_migrations_name_no_vendor():
-    assert sql_problems(SRC / PKG / "store" / "migrations") == []
+    folder = SRC / PKG / "store" / "migrations"
+    assert list(folder.glob("*.sql")), "no migrations found: the scan would check nothing"
+    assert sql_problems(folder) == []
 
 
 def test_every_named_vendor_module_exists():
@@ -632,7 +634,11 @@ def test_a_vendor_name_in_a_sql_comment_is_not_flagged(tmp_path):
 def test_the_test_environment_holds_no_cloud_credential_variables():
     import os
 
-    leaked = [
-        n for n in os.environ if n.startswith(("AWS_ENDPOINT_URL", "AZURE_", "AWS_CONTAINER_"))
-    ]
-    assert leaked == [] and "GOOGLE_APPLICATION_CREDENTIALS" not in os.environ
+    from tests.conftest import _ISOLATED, _ISOLATED_PREFIXES
+
+    assert {"AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_PROFILE"} <= set(_ISOLATED)
+    assert {"AWS_ENDPOINT_URL", "AZURE_", "GOOGLE_APPLICATION_CREDENTIALS"} <= set(
+        _ISOLATED_PREFIXES
+    )
+    leaked = [n for n in os.environ if n in _ISOLATED or n.startswith(_ISOLATED_PREFIXES)]
+    assert leaked == []

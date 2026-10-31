@@ -416,7 +416,7 @@ def test_offline_verify_reports_anchors_from_two_keys():
     signer, anchor, _ = _anchored_chain()
     _, other, _ = _anchored_chain()
     problems = chain.verify_anchor_bodies(anchor.bodies + other.bodies, signer.public_key())
-    assert any("different keys" in p for p in problems)
+    assert any("different key IDs" in p for p in problems)
 
 
 def test_a_body_without_meta_keeps_the_old_shape():
@@ -467,3 +467,15 @@ def test_a_legacy_three_argument_anchor_still_anchors_and_warns_once(caplog):
         )
     assert set(anchor.puts) == {2}
     assert sum("takes no alg/key_id" in r.message for r in caplog.records) == 1
+
+
+def test_offline_verify_rejects_seq_zero_and_a_non_string_key_id_without_raising():
+    signer, anchor, _ = _anchored_chain()
+    a, b = (json.loads(x) for x in anchor.bodies)
+    zero = {**a, "seq": 0}
+    mixed = {**b, "key_id": 7}
+    out = chain.verify_anchor_bodies(
+        [json.dumps(zero).encode(), json.dumps(mixed).encode(), anchor.bodies[0]],
+        signer.public_key(),
+    )
+    assert out == ["an anchor body is unreadable or has no alg and key_id"] * 2
