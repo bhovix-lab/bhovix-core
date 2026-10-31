@@ -40,6 +40,7 @@
   - It fails closed: a CLI command passes only when it is positively read-only. The WARDEN port was dead code
     and AWS/K8s-only.
 - `backends.hosts(entries)`: the hosts the configured kinds connect to, as a suggested egress list.
+  The Postgres store is not in the list: its address sits inside the secret DSN, so add the database host by hand.
 - **No single-dependency detector.** `llm_judge` runs on any llm kind, a local open-weights model on
   `openai_compat` included, so the cloud-neutral production detectors are `regex` + `llm_judge`.
   `bedrock_guardrail` is AWS-only. The approval-summary screen runs without the judge: no agent can be
