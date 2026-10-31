@@ -29,7 +29,7 @@ _EMPTY = {"type": "object", "properties": {}}
 # bare family or router names (`sonnet`, `opus`, `auto`, `default`) that routers such as LiteLLM and
 # OpenRouter map to whatever they choose. A router prefix (`openai/`, `openrouter/`) is read past.
 _LATEST = re.compile(r"(?i)(?:^|[-:/.])latest$")
-_BARE = re.compile(r"(?i)^(?:sonnet|opus|haiku|fable|default|best|opusplan|auto)(?:\[1m\])?$")
+_BARE = re.compile(r"(?i)^(?:sonnet|opus|haiku|fable|default|best|opusplan|auto|free)(?:\[1m\])?$")
 
 
 def model_name(model_id: str) -> str:

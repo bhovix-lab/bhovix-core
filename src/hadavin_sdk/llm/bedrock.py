@@ -59,6 +59,10 @@ def make(settings: Any, deps: Any) -> BedrockLLM:
 def floating(model_id: str) -> bool:
     """Bedrock model and inference-profile ids carry their version (`...-v1:0`) and a provider prefix
     (`anthropic.`); a bare name (`sonnet`) is someone else's alias, never a Bedrock id."""
+    if (
+        "prompt-router/" in model_id
+    ):  # a router picks a model per request, so the route is not pinned
+        return True
     return "." not in model_id and not model_id.startswith("arn:")
 
 

@@ -408,7 +408,9 @@ def test_a_changed_golden_document_un_qualifies(cfg_dir):
     assert load_registry(cfg).golden_sha256("test-agent") != before
 
 
-@pytest.mark.parametrize("model_id", ["openai/gpt-4o", "openrouter/auto", "sonnet", "litellm/opus"])
+@pytest.mark.parametrize(
+    "model_id", ["openai/gpt-4o", "openrouter/auto", "openrouter/free", "sonnet", "litellm/opus"]
+)
 def test_a_router_prefix_does_not_hide_a_moving_alias(model_id):
     settings = OpenAICompatSettings(kind="openai_compat", base_url="https://router.example/v1")
     with pytest.raises(ConfigError, match="alias"):
@@ -496,3 +498,19 @@ def test_a_cut_summary_is_screened_again():
         "a " * 1449
     ) + "kubectl delete ns prod"  # what a 2,900-character cut can leave at the end
     assert WITHHELD in withhold_commands(cut)
+
+
+def test_a_bedrock_prompt_router_arn_is_a_moving_model():
+    from hadavin_sdk.llm.bedrock import floating
+
+    arn = "arn:aws:bedrock:us-east-1:123456789012:"
+    assert floating(arn + "default-prompt-router/anthropic.claude:1")
+    assert floating(arn + "prompt-router/my-router:1")
+    assert not floating(arn + "inference-profile/us.anthropic.claude-sonnet-4-v1:0")
+
+
+def test_a_numeric_gcp_project_path_is_masked_whole():
+    from hadavin_sdk.guard.redact import redact
+
+    out = redact("projects/123456789012/secrets/client-payroll").text
+    assert "client-payroll" not in out and "123456789012" not in out
