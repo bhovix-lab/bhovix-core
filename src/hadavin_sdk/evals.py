@@ -1,12 +1,15 @@
 """Evals gate: run an agent's golden set, grade by exact field match, append a green run to qualified.jsonl.
 
 An agent with no green run for its current (model id, prompt hash, config hash) cannot start.
+With ``k > 1`` every item runs k times and green needs pass^k (items passing all k runs) at the threshold.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
+from decimal import Decimal
 
 from hadavin_sdk.config import ConfigError, confined
 from hadavin_sdk.guard import judge
@@ -18,7 +21,38 @@ _ASK = "Process the attached request document."
 QUALIFIED = "qualified.jsonl"
 
 
-def gate(registry: Registry, llm: LLM, agent_id: str) -> GateRun:
+def upper_error_bound(x: int, n: int, confidence: float = 0.95) -> float | None:
+    """Exact one-sided Clopper-Pearson upper bound on a failure rate after x failures in n items.
+
+    The p at which P(X <= x | n, p) = 1 - confidence, found by bisection (the CDF falls as p rises).
+    """
+    if n == 0:
+        return None
+    if not 0 <= x <= n:
+        raise ValueError(f"failures {x} outside 0..{n}")
+    if x == n:
+        return 1.0
+    alpha = 1 - confidence
+
+    # In log space: comb(n, i) overflows a float above n of about 1030. Computed once, not per bisection step.
+    log_combs = [math.log(math.comb(n, i)) for i in range(x + 1)]
+
+    def cdf(p: float) -> float:
+        return sum(
+            math.exp(lc + i * math.log(p) + (n - i) * math.log1p(-p))
+            for i, lc in enumerate(log_combs)
+        )
+
+    lo, hi = 0.0, 1.0
+    for _ in range(60):  # 2**-60: far below any reported precision
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if cdf(mid) > alpha else (lo, mid)
+    return hi
+
+
+def gate(registry: Registry, llm: LLM, agent_id: str, *, k: int = 1) -> GateRun:
+    if k < 1:
+        raise ConfigError(f"gate k must be at least 1, got {k}")
     cfg = registry.config
     agent = registry.agents[agent_id]
     # The golden set, its documents and judge.jsonl, hashed before the run and again after it: a file that
@@ -31,24 +65,35 @@ def gate(registry: Registry, llm: LLM, agent_id: str) -> GateRun:
         {"name": c.id, "description": c.description, "input_schema": c.input_schema}
         for c in (registry.contracts[a] for a in agent.scope_allowed)
     ]
-    passed = 0
+    passed = run_passes = abstains = 0
+    cost = Decimal(0)
     for case in cases:
-        reply = llm.chat(
-            [{"role": "user", "content": _ASK}],
-            system=registry.prompt(agent_id),
-            route=agent.model_route,
-            tools=tools,
-            # input_ref comes from a file: confined to inputs_dir (no "../" or absolute escapes).
-            documents=[confined(cfg.inputs_dir, case["input_ref"]).read_bytes()],
-        )
-        got = (
-            {"action": reply.tool_calls[0].name, "inputs": reply.tool_calls[0].input}
-            if reply.tool_calls
-            else {"action": None, "inputs": {}}
-        )
-        passed += got == case["expected"]
+        # input_ref comes from a file: confined to inputs_dir (no "../" or absolute escapes).
+        doc = confined(cfg.inputs_dir, case["input_ref"]).read_bytes()
+        case_passes = 0
+        for _ in range(k):
+            reply = llm.chat(
+                [{"role": "user", "content": _ASK}],
+                system=registry.prompt(agent_id),
+                route=agent.model_route,
+                tools=tools,
+                documents=[doc],
+            )
+            cost += reply.cost_usd
+            abstains += not reply.tool_calls
+            got = (
+                {"action": reply.tool_calls[0].name, "inputs": reply.tool_calls[0].input}
+                if reply.tool_calls
+                else {"action": None, "inputs": {}}
+            )
+            case_passes += got == case["expected"]
+        run_passes += case_passes
+        passed += case_passes == k  # k == 1: passed; k > 1: passed all k runs
     n = len(cases)
-    rate = passed / n if n else 0.0
+    pairs = n * k
+    rate = run_passes / pairs if n else 0.0  # pass@1
+    pass_k = passed / n if n and k > 1 else None
+    score = pass_k if pass_k is not None else rate
     # An llm_judge is qualified by its own golden set on the same model client, at its own rate (design 4.3):
     # the agent's passes never hide a judge's failures, and an empty judge set qualifies nothing.
     judges_green = True
@@ -70,10 +115,16 @@ def gate(registry: Registry, llm: LLM, agent_id: str) -> GateRun:
         passed=passed,
         pass_rate=rate,
         threshold=cfg.eval_threshold,
+        # The judge set above runs once per gate call, not k times.
         green=n > 0
-        and rate >= cfg.eval_threshold
+        and score >= cfg.eval_threshold
         and judges_green
         and golden_before == golden_after,
+        k=k,
+        pass_k=pass_k,
+        abstain_rate=abstains / pairs if n else None,
+        cost_per_task_usd=cost / pairs if n else None,
+        upper_error_bound=upper_error_bound(n - passed, n),
     )
     if run.green:  # append-only log: one green run per line
         path = cfg.root / QUALIFIED
