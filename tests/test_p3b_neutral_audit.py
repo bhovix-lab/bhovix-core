@@ -354,3 +354,128 @@ def test_every_anchor_body_is_the_same_json_shape():
 
     assert json.loads(anchors.body(7, "h", "s")) == {"seq": 7, "hash": "h", "signature": "s"}
     assert anchors.key(7) == "anchors/000000000007.json"
+
+
+# --- the anchor body names its scheme and key: offline verification needs nothing else
+
+
+class _Recording:
+    """An anchor that keeps the exact bytes the chain asks every kind to write."""
+
+    def __init__(self):
+        self.bodies = []
+
+    def put(self, seq, head, signature, **meta):
+        from hadavin_sdk.audit import anchors
+
+        self.bodies.append(anchors.body(seq, head, signature, **meta))
+
+    def all(self):
+        from hadavin_sdk.audit import anchors
+
+        return dict(anchors.parse(b) for b in self.bodies)
+
+
+def _anchored_chain():
+    signer = LocalSigner(Ed25519PrivateKey.generate())
+    anchor = _Recording()
+    log = chain.ChainAudit(chain._Db.memory(), signer, anchor, 2)
+    for i in range(4):
+        log.write_intent(
+            AuditEvent(run_id="r", domain="step", operation=f"n{i}", principal="p", source="s")
+        )
+    return signer, anchor, log
+
+
+def test_anchor_body_carries_alg_and_key_id_and_verifies_offline():
+    signer, anchor, _ = _anchored_chain()
+    docs = [json.loads(b) for b in anchor.bodies]
+    assert len(docs) == 2
+    assert all(d["alg"] == "ed25519" and d["key_id"] == signer.key_id for d in docs)
+    assert chain.verify_anchor_bodies(anchor.bodies, signer.public_key()) == []
+
+
+def test_offline_verify_catches_a_forged_a_foreign_key_and_a_bare_anchor():
+    from hadavin_sdk.audit import anchors
+
+    signer, anchor, _ = _anchored_chain()
+    forged = json.loads(anchor.bodies[0])
+    forged["hash"] = "f" * 64
+    assert chain.verify_anchor_bodies([json.dumps(forged).encode()], signer.public_key()) == [
+        f"anchor {forged['seq']} has an invalid signature"
+    ]
+    other = LocalSigner(Ed25519PrivateKey.generate())
+    assert len(chain.verify_anchor_bodies(anchor.bodies, other.public_key())) == 2
+    bare = anchors.body(2, "h" * 64, "ab" * 64)  # a body from before alg and key_id were written
+    assert chain.verify_anchor_bodies([bare], signer.public_key()) == [
+        "an anchor body is unreadable or has no alg and key_id"
+    ]
+
+
+def test_offline_verify_reports_anchors_from_two_keys():
+    signer, anchor, _ = _anchored_chain()
+    _, other, _ = _anchored_chain()
+    problems = chain.verify_anchor_bodies(anchor.bodies + other.bodies, signer.public_key())
+    assert any("different key IDs" in p for p in problems)
+
+
+def test_a_body_without_meta_keeps_the_old_shape():
+    from hadavin_sdk.audit import anchors
+
+    assert json.loads(anchors.body(1, "h", "s", "ed25519", "k")) == {
+        "seq": 1,
+        "hash": "h",
+        "signature": "s",
+        "alg": "ed25519",
+        "key_id": "k",
+    }
+
+
+def test_offline_verify_refuses_nothing_and_duplicates_and_odd_seqs():
+    signer, anchor, _ = _anchored_chain()
+    assert chain.verify_anchor_bodies([], signer.public_key()) == [
+        "no anchor objects given: nothing was verified"
+    ]
+    twice = chain.verify_anchor_bodies(anchor.bodies + anchor.bodies[:1], signer.public_key())
+    assert any("appears twice" in p for p in twice)
+    doc = json.loads(anchor.bodies[0])
+    doc["seq"] = float(doc["seq"])
+    assert chain.verify_anchor_bodies([json.dumps(doc).encode()], signer.public_key()) == [
+        "an anchor body is unreadable or has no alg and key_id"
+    ]
+
+
+def test_a_legacy_three_argument_anchor_still_anchors_and_warns_once(caplog):
+    class Legacy:
+        def __init__(self):
+            self.puts = {}
+
+        def put(self, seq, head, signature):
+            self.puts[seq] = (head, signature)
+
+        def all(self):
+            return dict(self.puts)
+
+    anchor = Legacy()
+    with caplog.at_level("WARNING"):
+        log = chain.ChainAudit(
+            chain._Db.memory(), LocalSigner(Ed25519PrivateKey.generate()), anchor, 2
+        )
+    for i in range(2):
+        log.write_intent(
+            AuditEvent(run_id="r", domain="step", operation=f"n{i}", principal="p", source="s")
+        )
+    assert set(anchor.puts) == {2}
+    assert sum("takes no alg/key_id" in r.message for r in caplog.records) == 1
+
+
+def test_offline_verify_rejects_seq_zero_and_a_non_string_key_id_without_raising():
+    signer, anchor, _ = _anchored_chain()
+    a, b = (json.loads(x) for x in anchor.bodies)
+    zero = {**a, "seq": 0}
+    mixed = {**b, "key_id": 7}
+    out = chain.verify_anchor_bodies(
+        [json.dumps(zero).encode(), json.dumps(mixed).encode(), anchor.bodies[0]],
+        signer.public_key(),
+    )
+    assert out == ["an anchor body is unreadable or has no alg and key_id"] * 2

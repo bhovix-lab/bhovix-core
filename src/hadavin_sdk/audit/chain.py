@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import inspect
 import json
 import logging
 import sqlite3
@@ -65,6 +66,12 @@ def _hash(prev: str, seq: int, at: str, run_id: str, kind: str, body: str) -> st
         [prev, seq, at, run_id, kind, body], ensure_ascii=False, separators=(",", ":")
     )
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def _takes_meta(put: Callable) -> bool:
+    params = inspect.signature(put).parameters.values()
+    names = {p.name for p in params}
+    return any(p.kind is p.VAR_KEYWORD for p in params) or {"alg", "key_id"} <= names
 
 
 def _signed_message(seq: int, head: str) -> bytes:
@@ -142,6 +149,13 @@ class ChainAudit:
         checkpoint_every: int = 100,
     ) -> None:
         self._db, self.signer, self.anchor = db, signer, anchor
+        # A custom anchor kind written before alg and key_id existed takes three arguments: it still works (its
+        # objects just lack the two fields) and is logged once, instead of failing every put with a TypeError.
+        self._anchor_takes_meta = not hasattr(anchor, "put") or _takes_meta(anchor.put)
+        if not self._anchor_takes_meta:
+            _LOG.warning(
+                "audit anchor put() takes no alg/key_id: its objects will not verify offline"
+            )
         self.checkpoint_every = checkpoint_every
         # Last resort when even the outbox table cannot be written (the database is down): drained by reconcile.
         self._pending: list[AuditEvent] = []
@@ -295,7 +309,12 @@ class ChainAudit:
 
     def _anchor(self, seq: int, head: str, signature: str) -> None:
         try:
-            self.anchor.put(seq, head, signature)
+            if self._anchor_takes_meta:
+                self.anchor.put(
+                    seq, head, signature, alg=self.signer.alg, key_id=self.signer.key_id
+                )
+            else:
+                self.anchor.put(seq, head, signature)
         except Exception as exc:  # noqa: BLE001 - an anchor outage must not stop the recording
             _LOG.error(
                 "audit checkpoint %s not anchored (%s); retried next time", seq, type(exc).__name__
@@ -407,6 +426,36 @@ def _check_anchors(
             problems.append(f"checkpoint {seq} differs from its anchor: the history was rewritten")
     for seq in sorted(set(anchors) - set(stored)):
         problems.append(f"anchor {seq} has no checkpoint here: the database lost history")
+
+
+def verify_anchor_bodies(bodies: list[bytes], public_key: bytes) -> list[str]:
+    """Offline: check the anchor objects alone against a public key. The scheme and key name come from each
+    body (`alg`, `key_id`), so nothing else has to be known; a body without them is a finding."""
+    if not bodies:
+        return ["no anchor objects given: nothing was verified"]
+    problems = []
+    key_ids = set()
+    seqs: set[int] = set()
+    for raw in bodies:
+        try:
+            a = json.loads(raw)
+            seq, head, alg = a["seq"], a["hash"], a["alg"]
+            key_id = a["key_id"]
+            if type(seq) is not int or seq < 1 or not isinstance(key_id, str) or not key_id:
+                raise TypeError("seq or key_id")
+            key_ids.add(key_id)
+            signature = bytes.fromhex(a["signature"])
+        except (ValueError, KeyError, TypeError):
+            problems.append("an anchor body is unreadable or has no alg and key_id")
+            continue
+        if seq in seqs:
+            problems.append(f"anchor {seq} appears twice")
+        seqs.add(seq)
+        if not verify_signature(public_key, signature, _signed_message(seq, head), alg):
+            problems.append(f"anchor {seq} has an invalid signature")
+    if len(key_ids) > 1:
+        problems.append(f"anchors report {len(key_ids)} different key IDs: {sorted(key_ids)}")
+    return problems
 
 
 # --------------------------------------------------------------------------- table factory

@@ -39,8 +39,17 @@ class AzureBlobAnchor:
         self._container, self.mode, self.retain = container, mode, retain
         self.clock = clock or (lambda: datetime.now(UTC))
 
-    def put(self, seq: int, head: str, signature: str) -> None:
-        name, data = anchors.key(seq), anchors.body(seq, head, signature)
+    def put(
+        self,
+        seq: int,
+        head: str,
+        signature: str,
+        *,
+        alg: str | None = None,
+        key_id: str | None = None,
+    ) -> None:
+        name = anchors.key(seq)
+        data = anchors.body(seq, head, signature, alg, key_id)
         policy = ImmutabilityPolicy(
             expiry_time=self.clock() + self.retain, policy_mode=_MODES[self.mode]
         )

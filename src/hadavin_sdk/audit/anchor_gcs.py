@@ -27,8 +27,17 @@ class GcsAnchor:
     def __init__(self, bucket: Any) -> None:
         self._bucket = bucket
 
-    def put(self, seq: int, head: str, signature: str) -> None:
-        name, data = anchors.key(seq), anchors.body(seq, head, signature)
+    def put(
+        self,
+        seq: int,
+        head: str,
+        signature: str,
+        *,
+        alg: str | None = None,
+        key_id: str | None = None,
+    ) -> None:
+        name = anchors.key(seq)
+        data = anchors.body(seq, head, signature, alg, key_id)
         blob = self._bucket.blob(name)
         try:
             blob.upload_from_string(

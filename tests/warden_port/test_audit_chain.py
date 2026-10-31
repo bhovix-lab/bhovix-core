@@ -454,7 +454,7 @@ def test_each_anchor_is_locked_dated_and_never_overwritten(key, bucket):
     }
     head, signature = log._db.run("SELECT hash, signature FROM audit_checkpoints")[0]
     anchor.put(
-        2, head, signature
+        2, head, signature, alg=key.alg, key_id=key.key_id
     )  # a retry whose first answer was lost: the 412 holds the same bytes
     with pytest.raises(AnchorConflict):
         anchor.put(2, "forged", "forged")  # IfNoneMatch: an anchor is never replaced
@@ -475,7 +475,7 @@ def test_a_checkpoint_that_cannot_be_signed_or_anchored_fails_open_and_is_retrie
         def __init__(self, fail):
             self.fail, self.puts = fail, {}
 
-        def put(self, seq, head, sig):
+        def put(self, seq, head, sig, **_meta):
             if self.fail:
                 raise ConnectionError("anchor store down")
             self.puts[seq] = (head, sig)

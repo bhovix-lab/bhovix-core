@@ -13,7 +13,21 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 # Tests never reach a real AWS account: no profile, config or credential_process from the machine running
 # them, only fake keys (moto and the in-process stubs answer every call). Set before any boto3 session exists.
-for _name in ("AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_SESSION_TOKEN"):
+# Nor to any other cloud or a redirected endpoint: endpoint overrides, container and web-identity credentials,
+# and the Google and Azure credential variables of the machine running them.
+_ISOLATED = (
+    "AWS_PROFILE",
+    "AWS_DEFAULT_PROFILE",
+    "AWS_SESSION_TOKEN",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+)
+_ISOLATED_PREFIXES = (
+    "AWS_ENDPOINT_URL",
+    "AWS_CONTAINER_CREDENTIALS_",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "AZURE_",
+)
+for _name in [n for n in os.environ if n in _ISOLATED or n.startswith(_ISOLATED_PREFIXES)]:
     os.environ.pop(_name, None)
 os.environ["AWS_CONFIG_FILE"] = os.devnull
 os.environ["AWS_SHARED_CREDENTIALS_FILE"] = os.devnull
