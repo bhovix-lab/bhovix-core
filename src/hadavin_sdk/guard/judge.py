@@ -1,6 +1,8 @@
 """``llm_judge``: a model screens untrusted text for injection (design 4.3, 12.1; kept by the owner).
 
-The only cloud-agnostic detector: it runs on any configured llm route. Minimal on purpose: one fixed, versioned
+The only cloud-agnostic model detector: it runs on any configured llm route and kind (Claude, Bedrock, Gemini,
+or a local open-weights model on `openai_compat`), so regex + llm_judge is a production detector set with no
+single vendor. Minimal on purpose: one fixed, versioned
 prompt (``judge_prompt.md``, its hash is in ``config_hash``), a forced JSON verdict, metered (the cost rides on the
 Verdict and the caller charges it), qualified by its own golden set (``golden_dir/judge.jsonl``, run by the evals
 gate). A tripwire OR-ed with at least one other detector (config refuses a judge alone), never the default: the

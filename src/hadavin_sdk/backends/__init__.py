@@ -54,4 +54,13 @@ def make(
     return getattr(module, func)(settings, deps)
 
 
-__all__ = ["Deps", "make"]
+def hosts(entries: list[tuple[str, KindSettings]]) -> list[str]:
+    """The hosts the configured backends connect to (`Backends.entries()`): a suggested `egress.yaml`
+    (design 12.9). A suggestion, not enforcement: runtime egress control is network-level (S11)."""
+    found = {
+        h for cap, s in entries if (fn := TABLE[cap][s.kind].hosts) is not None for h in fn(s) if h
+    }
+    return sorted(found)
+
+
+__all__ = ["Deps", "hosts", "make"]

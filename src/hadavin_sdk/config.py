@@ -157,7 +157,9 @@ class Config(_Strict):
     backends: Backends
     golden_dir: Path
     inputs_dir: Path
-    eval_threshold: float = Field(default=1.0, ge=0.0, le=1.0)
+    eval_threshold: float = Field(
+        default=1.0, gt=0.0, le=1.0
+    )  # 0 would qualify an agent that passed nothing
     check_modules: list[str] = []
     systems: dict[str, System] = {}
     egress_hosts: frozenset[str] = frozenset()

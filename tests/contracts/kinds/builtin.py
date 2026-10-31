@@ -18,7 +18,7 @@ from tests.contracts.kinds import kind
 
 ROUTES = {
     "default": Route(
-        model_id="contract-model",
+        model_id="contract.model-1:1",  # pinned by every kind's rule (a dot, a digit, a tag)
         input_usd_per_mtok=Decimal("3.00"),
         output_usd_per_mtok=Decimal("15.00"),
         max_tokens=64,

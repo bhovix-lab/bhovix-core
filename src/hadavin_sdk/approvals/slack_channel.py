@@ -16,6 +16,7 @@ from typing import Any
 
 from hadavin_sdk.approvals import slack
 from hadavin_sdk.approvals.channel import clean
+from hadavin_sdk.approvals.gate import withhold_commands
 from hadavin_sdk.errors import ConfigError
 from hadavin_sdk.llm.common import post_json
 from hadavin_sdk.models import ApprovalDecision, ApprovalRequest
@@ -63,7 +64,13 @@ class SlackChannel:
     def _blocks(self, req: ApprovalRequest, approver_ids: list[str] | None) -> list[dict[str, Any]]:
         step = f"Step {req.current_step + 1} of {len(req.steps)}"
         blocks: list[dict[str, Any]] = [
-            {"type": "section", "text": {"type": "plain_text", "text": clean(req.summary)[:2900]}},
+            {
+                "type": "section",
+                "text": {
+                    "type": "plain_text",
+                    "text": withhold_commands(clean(req.summary)[:2900]),
+                },
+            },
         ]
         if approver_ids is None:  # decided or expired: the buttons go
             blocks.append(

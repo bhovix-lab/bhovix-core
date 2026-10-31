@@ -272,7 +272,7 @@ def test_gemini_thinking_tokens_are_charged_as_output():
     "platform, suffix",
     [
         ("api", "/v1/messages"),
-        ("vertex", "/publishers/anthropic/models/contract-model:rawPredict"),
+        ("vertex", "/publishers/anthropic/models/contract.model-1:1:rawPredict"),
         ("foundry", "/anthropic/v1/messages"),
     ],
 )

@@ -9,6 +9,7 @@ Needs ``hadavin-sdk[anthropic]``.
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections.abc import Callable
 from typing import Any
@@ -55,12 +56,33 @@ def client(settings: Any, key: str | None) -> Any:
         raise ConfigError(f"backend llm 'anthropic' ({settings.platform}): {exc}") from exc
 
 
+# Claude's moving aliases. Every Claude API id is a pinned snapshot (WARDEN, checked 2026-10-02), dated or not.
+_ALIASES = re.compile(r"(?i)^(?:sonnet|opus|haiku|fable|default|best|opusplan)(?:\[1m\])?$")
+
+
+def floating(model_id: str) -> bool:
+    return bool(_ALIASES.match(model_id))
+
+
+def retryable(exc: BaseException) -> bool | None:
+    """The SDK's own network errors (a status error is decided by its `status_code`, generically)."""
+    if isinstance(exc, anthropic.APIConnectionError):  # includes APITimeoutError
+        return True
+    try:  # Vertex refreshes a Google token through google-auth (installed with the vertex extra)
+        from google.auth import exceptions as google_auth
+    except ImportError:
+        return None
+    if isinstance(exc, google_auth.RefreshError):
+        return False  # bad or missing credentials
+    return True if isinstance(exc, google_auth.TransportError) else None
+
+
 def make(settings: Any, deps: Any) -> AnthropicLLM:
     name = settings.api_key_secret_name if settings.platform != "vertex" else None
     key = (lambda: deps.resolve(name)) if name else None
     return AnthropicLLM(
         client(settings, key() if key else None),
-        pinned(dict(deps.routes)),
+        pinned(dict(deps.routes), floating),
         settings.max_attempts,
         key=key,
     )
@@ -68,6 +90,7 @@ def make(settings: Any, deps: Any) -> AnthropicLLM:
 
 class AnthropicLLM(NetworkLLM):
     label = "anthropic"
+    retryable = staticmethod(retryable)
 
     def __init__(
         self,

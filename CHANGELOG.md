@@ -3,6 +3,21 @@
 ## Unreleased
 
 ### Upgrade steps
+- **P5/P6 follow-ups.**
+  - **Re-gate every agent once.** `golden_sha256` now covers the input documents the golden cases point at,
+    so a changed document un-qualifies.
+  - `config_hash` now also holds `eval_threshold` (when not 1.0), `max_completion_tokens` and the Foundry
+    `resource`.
+  - `eval_threshold: 0` is refused.
+  - A `bedrock_guardrail` must name a published `guardrail_version` (digits; `DRAFT` can change).
+  - A detector `threshold: 0` is refused (it flagged every clean text).
+  - A `bedrock_guardrail` needs `bedrock:GetGuardrail`. Start-up refuses a guardrail with no PROMPT_ATTACK
+    input filter switched on.
+  - Moving model aliases are refused per kind:
+    - OpenAI names with no dated snapshot (`gpt-4o`, `o3`);
+    - untagged names on a local OpenAI-compatible server (Ollama: `llama3` means `:latest`);
+    - Gemini names with no version (`gemini-pro`);
+    - Bedrock names without a provider prefix.
 - **Rewrite config.yaml to config v2** (slice 2 P1b). `environment: dev|pilot|prod` is required. Each backend
   is `backends.<capability>: {kind: <name>, ...settings}`. The old top-level keys are refused with a message
   naming the new place: `audit_dir` -> `backends.audit.dir`, `recorded_dir` -> `backends.llm.recorded_dir`,
@@ -17,6 +32,19 @@
   field with a default no longer un-qualifies agents, and swapping the llm backend does.
 
 ### Added
+- **G4 command withholding** (P5/P6 follow-ups). `channel.clean` now withholds every command a person could
+  paste to change a system: `[command withheld (G4)]` stands in its place.
+  - It covers AWS, gcloud/gsutil/bq, az, azcopy and PowerShell Az, kubectl/oc, helm, terraform/tofu/pulumi,
+    ansible, systemctl, docker/podman, git, gh/glab, psql/mysql/mongosh/redis-cli, SQL write statements,
+    `rm -rf` and `curl | sh`.
+  - It fails closed: a CLI command passes only when it is positively read-only. The WARDEN port was dead code
+    and AWS/K8s-only.
+- `backends.hosts(entries)`: the hosts the configured kinds connect to, as a suggested egress list.
+  The Postgres store is not in the list: its address sits inside the secret DSN, so add the database host by hand.
+- **No single-dependency detector.** `llm_judge` runs on any llm kind, a local open-weights model on
+  `openai_compat` included, so the cloud-neutral production detectors are `regex` + `llm_judge`.
+  `bedrock_guardrail` is AWS-only. The approval-summary screen runs without the judge: no agent can be
+  charged there, and the judge already screens the document and tool output.
 - `hadavin-sdk tick` (slice 2 P7, v5 contract): one pass of isolated steps (`sweep`, `reconcile`, `stuck`,
   `checkpoint`, then `heartbeat` last); a failing step is logged and recorded in `tick_state` and the others
   still run. Exit 0 ok, 1 a step failed, 2 config error, 3 store unreachable. Later steps are appended to
@@ -48,6 +76,13 @@
   (`guardrail_id`, `guardrail_version`, `region`; the PROMPT_ATTACK filter, extra `aws`).
 
 ### Changed
+- P5/P6 follow-ups:
+  - limits are checked again before a tool output is screened, so a reply that spent the budget never pays
+    for a judge call;
+  - redaction masks GCP `projects/<id>/...` paths and Azure `/subscriptions/<uuid>/...` ids, and ARNs with no
+    account (`arn:aws:s3:::bucket`) or in the `aws-cn` and `aws-us-gov`
+    partitions;
+  - `llm/retry.py` names no vendor: each llm kind says which of its SDK's errors are retryable.
 - Postgres TLS (slice 2 P7): `verify-full` by default for any non-local host, with the server's CA bundle
   from `sslrootcert` (a file) or `sslrootcert_secret_name` (a PEM in any secrets backend); an explicit weaker
   `sslmode` is a dev opt-down. With `iam_auth` only `verify-full`/`verify-ca`, and a runtime DSN with a

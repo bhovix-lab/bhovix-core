@@ -13,6 +13,7 @@ from collections.abc import Callable
 from typing import Any
 
 import boto3  # the extra: a missing install fails at start-up with the hint (backends.make)
+import botocore.exceptions
 from botocore.config import Config
 
 from hadavin_sdk.llm.common import (
@@ -24,6 +25,7 @@ from hadavin_sdk.llm.common import (
     reply,
     schema_hint,
 )
+from hadavin_sdk.llm.retry import retryable_status
 from hadavin_sdk.models import Reply, ToolCall
 
 FORCED_TOOL_FAMILIES = frozenset({"anthropic", "amazon"})
@@ -51,11 +53,67 @@ def make(settings: Any, deps: Any) -> BedrockLLM:
             ignore_configured_endpoint_urls=True,
         ),
     )
-    return BedrockLLM(client, pinned(dict(deps.routes)), settings.max_attempts)
+    return BedrockLLM(client, pinned(dict(deps.routes), floating), settings.max_attempts)
+
+
+def floating(model_id: str) -> bool:
+    """Bedrock model and inference-profile ids carry their version (`...-v1:0`) and a provider prefix
+    (`anthropic.`); a bare name (`sonnet`) is someone else's alias, never a Bedrock id."""
+    if (
+        "prompt-router/" in model_id
+    ):  # a router picks a model per request, so the route is not pinned
+        return True
+    return "." not in model_id and not model_id.startswith("arn:")
+
+
+# Error codes worth another attempt (Converse API reference).
+_RETRY_CODES = frozenset(
+    {
+        "ThrottlingException",
+        "ServiceQuotaExceededException",
+        "ServiceUnavailableException",
+        "InternalServerException",
+        "ModelNotReadyException",
+        "ModelTimeoutException",
+    }
+)
+_NETWORK = (
+    botocore.exceptions.EndpointConnectionError,
+    botocore.exceptions.ConnectTimeoutError,
+    botocore.exceptions.ReadTimeoutError,
+    botocore.exceptions.ConnectionClosedError,
+)
+
+
+def _code(exc: BaseException) -> str:
+    response = getattr(exc, "response", None)
+    return str(response.get("Error", {}).get("Code", "")) if isinstance(response, dict) else ""
+
+
+def detail(exc: BaseException) -> str:
+    """The HTTP status and the error code (botocore keeps both in `response`), for the log line."""
+    response = getattr(exc, "response", None)
+    status = (
+        response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        if isinstance(response, dict)
+        else None
+    )
+    return " ".join(str(p) for p in (status, _code(exc)) if p)
+
+
+def retryable(exc: BaseException) -> bool | None:
+    if isinstance(exc, _NETWORK):
+        return True
+    if isinstance(exc, botocore.exceptions.ClientError):
+        code = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        return _code(exc) in _RETRY_CODES or (isinstance(code, int) and retryable_status(code))
+    return None
 
 
 class BedrockLLM(NetworkLLM):
     label = "bedrock"
+    retryable = staticmethod(retryable)
+    detail = staticmethod(detail)
 
     def __init__(
         self,

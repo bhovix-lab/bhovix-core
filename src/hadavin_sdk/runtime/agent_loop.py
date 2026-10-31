@@ -252,6 +252,10 @@ class Runtime:
             if call.name in self.registry.contracts:
                 return self._submit(run, call)
             if call.name in self.hooks.tools and call.name in agent.tools_allowed:
+                # The reply just charged may have used the budget: neither the tool nor a paid screen of its
+                # output (llm_judge) runs past it (fail closed).
+                if (stopped := self._limits_stop(run)) is not None:
+                    return stopped
                 try:
                     result = str(self.hooks.tools[call.name](call.input))
                 except Exception:  # noqa: BLE001 - a broken tool must not strand the run in WORKING

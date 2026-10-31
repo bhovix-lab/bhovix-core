@@ -55,6 +55,9 @@ def gate(registry: Registry, llm: LLM, agent_id: str, *, k: int = 1) -> GateRun:
         raise ConfigError(f"gate k must be at least 1, got {k}")
     cfg = registry.config
     agent = registry.agents[agent_id]
+    # The golden set, its documents and judge.jsonl, hashed before the run and again after it: a file that
+    # changed while the run read it was not the set it qualifies on, so the run is never green.
+    golden_before = registry.golden_sha256(agent_id)
     golden_path = confined(cfg.golden_dir, f"{agent_id}.jsonl")
     golden_bytes = golden_path.read_bytes()
     cases = [json.loads(line) for line in golden_bytes.decode("utf-8").splitlines() if line.strip()]
@@ -101,20 +104,22 @@ def gate(registry: Registry, llm: LLM, agent_id: str, *, k: int = 1) -> GateRun:
                 raise ConfigError("llm_judge needs its golden set: golden_dir/judge.jsonl")
             ok, total = judge.qualify(judge.JudgeDetector(llm, d.route, d.threshold), path)
             judges_green = judges_green and total > 0 and ok / total >= cfg.eval_threshold
+    golden_after = registry.golden_sha256(agent_id)
     run = GateRun(
         agent_id=agent_id,
         model_id=cfg.routes[agent.model_route].model_id,
         prompt_sha256=registry.prompt_sha256(agent_id),
         config_hash=registry.config_hash(agent_id),
-        golden_sha256=registry.golden_sha256(
-            agent_id
-        ),  # with judge.jsonl when a judge is configured
+        golden_sha256=golden_after,
         n=n,
         passed=passed,
         pass_rate=rate,
         threshold=cfg.eval_threshold,
         # The judge set above runs once per gate call, not k times.
-        green=n > 0 and score >= cfg.eval_threshold and judges_green,
+        green=n > 0
+        and score >= cfg.eval_threshold
+        and judges_green
+        and golden_before == golden_after,
         k=k,
         pass_k=pass_k,
         abstain_rate=abstains / pairs if n else None,
